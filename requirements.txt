@@ -1,0 +1,27 @@
+# Web框架
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# AI模型
+langchain>=0.1.0
+openai>=1.0.0
+
+# 文件传输
+paramiko>=3.0.0
+
+# 视频处理
+opencv-python>=4.8.0
+
+# YOLO检测（可选）
+ultralytics>=8.0.0
+
+# 消息队列
+aio-pika>=9.0.0
+
+# 对象存储
+minio>=7.1.0
+
+# 其他
+python-multipart>=0.0.6

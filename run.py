@@ -1,0 +1,23 @@
+# -*- coding: utf-8 -*-
+"""
+启动脚本
+"""
+import os
+
+# ========================================================
+# 【关键修复】强制关闭代理，防止 502 Bad Gateway 错误
+# 必须放在 import openai/langchain 之前执行
+# ========================================================
+os.environ['NO_PROXY'] = 'localhost,127.0.0.1,0.0.0.0,172.18.1.1'
+os.environ['no_proxy'] = 'localhost,127.0.0.1,0.0.0.0,172.18.1.1'
+
+import uvicorn
+
+
+if __name__ == '__main__':
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )
