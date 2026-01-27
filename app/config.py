@@ -37,10 +37,10 @@ class Settings(BaseSettings):
     max_tokens: int = 2048
     
     # RabbitMQ 配置
-    rabbitmq_host: str = "127.0.0.1"
+    rabbitmq_host: str = "192.168.26.245"
     rabbitmq_port: int = 5672
-    rabbitmq_user: str = "guest"
-    rabbitmq_password: str = "guest"
+    rabbitmq_user: str = "admin"
+    rabbitmq_password: str = "admin123"
     rabbitmq_vhost: str = "/"
     
     # MQ 任务队列配置（消费Java端发来的任务）
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     result_routing_key: str = "video.result.finish"
     
     # MinIO 配置（用于上传违规截图）
-    minio_endpoint: str = "127.0.0.1:9000"
+    minio_endpoint: str = "192.168.26.245:9000"
     minio_access_key: str = "ruoyi"
     minio_secret_key: str = "ruoyi123"
     minio_bucket: str = "violation-images"
