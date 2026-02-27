@@ -157,7 +157,7 @@ class VideoAnalyzer:
             {
                 "role": "user",
                 "content": [
-                    {"type": "video_url", "video_url": {"url": 'file://' + video_url}},
+                    {"type": "video_url", "video_url": {"url": video_url}},
                     {"type": "text", "text": ANALYSIS_PROMPT}
                 ]
             }
