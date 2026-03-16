@@ -21,27 +21,51 @@ logger = logging.getLogger(__name__)
 # 视频分析提示词
 ANALYSIS_PROMPT = '''
 你是一位高度专业的铜矿生产视频行为分析专家，同时具备严谨的数据处理能力。
-你的任务是逐帧分析视频流，同时识别出视频中的生产行为，每一个事件由一个或多个相关帧组成，代表一个较完整的行为过程。
-你必须同时读取叠加在帧图像上的元数据（日期、时间、用户编号、单位编号、序列号），并在事件开始到结束期间记录这些元数据。
-
-任务目标：
-1.视频帧与元数据解析：
-    视频提取：处理每一帧视频图像，并同时读取叠加在图像上的文本信息。
-    元数据提取：精准提取以下五项元数据：日期、时间、用户编号、单位编号、序列号。
-
-2.事件识别与描述：
-    事件定义：一个"事件"指的是一个明确开始、过程、结束的行为片段。
-    描述：对每一个识别出的事件，生成详细的文字描述。
-
-3.事件记录与关联元数据：
-    对每个事件，记录事件的「开始时间」和「结束时间」。
-    同时关联该事件中涉及的用户编号、单位编号、序列号以及日期。
-
-4.输出要求：
-    将所有事件记录汇总为一个纯净、规范、可被机器直接解析的 JSON 数组。
-    若视频中未识别到任何事件，则输出 []。
-    每个 JSON 对象必须包含以下字段：
-        event_description, date, start_time, end_time, user_number, unit_number, serial_number
+    你的任务是逐帧分析视频流，同时识别出视频中的生产行为，每一个事件由一个或多个相关帧组成，代表一个较完整的行为过程。
+    你必须同时读取叠加在帧图像上的元数据（日期、时间、用户编号、单位编号、序列号），并在事件开始到结束期间记录这些元数据。
+    任务目标：
+    1.视频帧与元数据解析：
+        视频提取：处理每一帧视频图像，并同时读取叠加在图像上的文本信息。
+        元数据提取：精准提取以下五项元数据。
+            日期：视频拍摄的日期。
+            时间：视频拍摄的具体时间。
+            用户编号：视频中的用户编号。
+            单位编号：视频中的单位编号。
+            序列号：视频中的序列号。
+    2.事件识别与描述：
+        事件定义：一个"事件"指的是一个明确开始、过程、结束的行为片段。
+        识别：在流视频中，当某用户或多人行为形成一个具有流程特征的片段（如"用户 A 走向机器 → 开始操作 → 操作结束并离开"），即识别为一个事件。
+        描述：对每一个识别出的事件，生成一段详细的文字描述，说明参与用户、所处位置/机器/工具、动作流程、交互对象／环境变换等。
+    3.事件记录与关联元数据：
+        对每个事件，记录事件的「开始时间」和「结束时间」。
+        同时关联该事件中涉及的用户编号、单位编号、序列号以及日期。
+    4.输出要求：
+        将所有事件记录汇总为一个纯净、规范、可被机器直接解析的 JSON 数组，无需任何 Markdown 代码块标记。
+        若视频中未识别到任何事件，则输出 []。
+        每个 JSON 对象代表一个事件，必须包含以下字段：
+            event_description： 对该事件的具体流程、参与人员、工具／机器、环境变化等的详细说明。
+            date： 事件发生日期（YYYY-MM-DD）。
+            start_time： 事件发生时间（HH:MM:SS）。
+            end_time： 事件结束时间（HH:MM:SS）。
+            user_number： 涉事用户的编号。
+            unit_number： 涉事单位的编号。
+            serial_number： 相关的设备或视频序列号。
+            start_second: 事件在视频第几秒开始。
+            end_second: 事件在视频第几秒结束。
+        JSON 对象结构示例如下：
+            [
+                {
+                "event_description": "",
+                "date": "",
+                "start_time": "",
+                "end_time": "",
+                "user_number": "",
+                "unit_number": "",
+                "serial_number": ""，
+                "start_second": "",
+                "end_second": ""
+                }
+            ]
 '''
 
 # 安全分析提示词
@@ -225,12 +249,14 @@ class VideoAnalyzer:
                 
                 unsafe_events.append({
                     "event_description": extract_safety_report(safety_result.content),
-                    "date": event.get('date', event.get('日期', '')),
-                    "start_time": event.get('start_time', event.get('开始时间', '')),
-                    "end_time": event.get('end_time', event.get('结束时间', '')),
-                    "user_number": event.get('user_number', event.get('用户编号', '')),
-                    "unit_number": event.get('unit_number', event.get('单位编号', '')),
-                    "serial_number": event.get('serial_number', event.get('序列号', ''))
+                    "date": event.get('date', ''),
+                    "start_time": event.get('start_time', ''),
+                    "end_time": event.get('end_time', ''),
+                    "user_number": event.get('user_number', ''),
+                    "unit_number": event.get('unit_number', ''),
+                    "serial_number": event.get('serial_number', ''),
+                    "start_second": event.get('start_second', ''),
+                    "end_second": event.get('end_second', '')
                 })
             except Exception as e:
                 logger.warning(f"安全分析失败: {e}")
