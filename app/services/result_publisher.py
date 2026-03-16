@@ -85,9 +85,14 @@ class ResultPublisher:
             violation_type = None
             ai_description = None
             
+            violation_start_second = None
+            violation_end_second = None
             if has_violation:
-                # 提取违规类型和描述
+                # 提取违规类型、描述及起止时间点
                 violation_type, ai_description = self._extract_violation_info(task_result.unsafe_events)
+                first_unsafe = task_result.unsafe_events[0]
+                violation_start_second = getattr(first_unsafe, 'start_second', None)
+                violation_end_second = getattr(first_unsafe, 'end_second', None)
                 
                 # 上传截图
                 if task_result.violation_frame is not None:
@@ -116,6 +121,8 @@ class ResultPublisher:
                 has_violation=has_violation,
                 violation_type=violation_type,
                 ai_description=ai_description,
+                violation_start_second=violation_start_second,
+                violation_end_second=violation_end_second,
                 screenshot_url=screenshot_url,
                 events_json=self._events_to_json(task_result.events),
                 process_time=task_result.process_time,

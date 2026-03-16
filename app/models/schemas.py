@@ -13,6 +13,8 @@ class EventInfo(BaseModel):
     date: str = ""
     start_time: str = ""
     end_time: str = ""
+    start_second: Optional[float] = None
+    end_second: Optional[float] = None
     user_number: str = ""
     unit_number: str = ""
     serial_number: str = ""
@@ -94,6 +96,8 @@ class VideoAnalysisResultMessage(BaseModel):
     has_violation: bool = Field(False, alias="hasViolation", description="是否有违规")
     violation_type: Optional[str] = Field(None, alias="violationType", description="违规类型")
     ai_description: Optional[str] = Field(None, alias="aiDescription", description="AI分析描述")
+    violation_start_second: Optional[float] = Field(None, alias="violationStartSecond", description="违规行为起始时间点(秒)")
+    violation_end_second: Optional[float] = Field(None, alias="violationEndSecond", description="违规行为结束时间点(秒)")
     screenshot_url: Optional[str] = Field(None, alias="screenshotUrl", description="违规截图URL")
     events_json: Optional[str] = Field(None, alias="eventsJson", description="事件列表JSON")
     process_time: Optional[float] = Field(None, alias="processTime", description="处理耗时(秒)")
@@ -111,6 +115,8 @@ class VideoAnalysisResultMessage(BaseModel):
             "hasViolation": self.has_violation,
             "violationType": self.violation_type,
             "aiDescription": self.ai_description,
+            "violationStartSecond": self.violation_start_second,
+            "violationEndSecond": self.violation_end_second,
             "screenshotUrl": self.screenshot_url,
             "eventsJson": self.events_json,
             "processTime": self.process_time,

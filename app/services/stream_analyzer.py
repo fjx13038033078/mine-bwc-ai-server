@@ -31,6 +31,11 @@ ANALYSIS_PROMPT = '''
 3.事件记录与关联元数据：记录事件的开始时间和结束时间，关联相关元数据。
 4.输出要求：将所有事件记录汇总为JSON数组，若未识别到任何事件则输出[]。
 
+【重要】start_time 和 end_time 必须表示「事件在视频中的位置」，即从视频开始（00:00:00）算起的相对时间。
+- 格式：HH:MM:SS 或 MM:SS，例如 00:01:20 表示视频第 1 分 20 秒处。
+- 禁止使用画面上的录制时钟时间（如 18:18:42）作为事件时间，那会导致错误。
+- date 字段可保留画面上的日期；start_time/end_time 必须是视频内相对时间。
+
 每个JSON对象必须包含以下字段：
 event_description, date, start_time, end_time, user_number, unit_number, serial_number
 '''
@@ -205,26 +210,29 @@ class StreamVideoAnalyzer:
             process_time = time.time() - start_time
             logger.info(f"[分析] 任务完成: taskId={task.task_id}, 耗时={process_time:.2f}s, 事件数={len(events_data)}")
             
-            # 如果有违规事件，尝试捕获违规帧
+            # 如果有违规事件，尝试捕获违规帧，并根据视频时长校验违规时间
             violation_frame = None
             violation_timestamp = None
             if unsafe_events:
-                # 尝试从第一个违规事件中提取时间戳
-                first_unsafe = unsafe_events[0]
-                start_time_str = first_unsafe.get('start_time', first_unsafe.get('开始时间', ''))
-                violation_timestamp = self._parse_time_to_seconds(start_time_str)
-                
-                # 尝试捕获违规帧
                 try:
                     cap = cv2.VideoCapture(task.presigned_url)
-                    if cap.isOpened() and violation_timestamp is not None:
+                    if cap.isOpened():
+                        # 获取视频时长，用于校验违规时间是否合理（防止模型误用画面上的时钟时间）
+                        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
                         fps = cap.get(cv2.CAP_PROP_FPS)
-                        if fps > 0:
+                        video_duration = (frame_count / fps) if fps and fps > 0 and frame_count > 0 else 0.0
+                        if video_duration > 0:
+                            self._sanitize_violation_times(unsafe_events, video_duration)
+                        
+                        # 尝试从第一个违规事件中提取时间戳并捕获违规帧
+                        first_unsafe = unsafe_events[0]
+                        violation_timestamp = first_unsafe.get('start_second')
+                        if violation_timestamp is not None and fps and fps > 0:
                             frame_number = int(violation_timestamp * fps)
                             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-                        success_read, violation_frame = cap.read()
-                        if not success_read:
-                            violation_frame = None
+                            success_read, violation_frame = cap.read()
+                            if not success_read:
+                                violation_frame = None
                     cap.release()
                 except Exception as e:
                     logger.warning(f"捕获违规帧失败: {e}")
@@ -280,11 +288,17 @@ class StreamVideoAnalyzer:
                     {"role": "user", "content": SAFETY_ANALYSIS_PROMPT + description}
                 ])
                 
+                start_time_str = event.get('start_time', event.get('开始时间', ''))
+                end_time_str = event.get('end_time', event.get('结束时间', ''))
+                start_sec = self._parse_time_to_seconds(start_time_str)
+                end_sec = self._parse_time_to_seconds(end_time_str)
                 unsafe_events.append({
                     "event_description": extract_safety_report(safety_result.content),
                     "date": event.get('date', event.get('日期', '')),
-                    "start_time": event.get('start_time', event.get('开始时间', '')),
-                    "end_time": event.get('end_time', event.get('结束时间', '')),
+                    "start_time": start_time_str,
+                    "end_time": end_time_str,
+                    "start_second": start_sec,
+                    "end_second": end_sec,
                     "user_number": event.get('user_number', event.get('用户编号', '')),
                     "unit_number": event.get('unit_number', event.get('单位编号', '')),
                     "serial_number": event.get('serial_number', event.get('序列号', ''))
@@ -293,6 +307,21 @@ class StreamVideoAnalyzer:
                 logger.warning(f"安全分析失败: {e}")
         
         return unsafe_events
+    
+    def _sanitize_violation_times(self, unsafe_events: List[Dict], video_duration: float) -> None:
+        """
+        根据视频时长校验违规时间，超出范围则置为 None。
+        防止模型误用画面上的录制时钟时间（如 18:18:42）导致错误。
+        """
+        for ev in unsafe_events:
+            start_sec = ev.get('start_second')
+            end_sec = ev.get('end_second')
+            if start_sec is not None and start_sec > video_duration:
+                logger.warning(f"违规时间 start_second={start_sec}s 超出视频时长 {video_duration:.1f}s，已置空")
+                ev['start_second'] = None
+            if end_sec is not None and end_sec > video_duration:
+                logger.warning(f"违规时间 end_second={end_sec}s 超出视频时长 {video_duration:.1f}s，已置空")
+                ev['end_second'] = None
     
     def _parse_time_to_seconds(self, time_str: str) -> Optional[float]:
         """
