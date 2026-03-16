@@ -4,6 +4,8 @@ API路由定义
 """
 import os
 import tempfile
+import time
+import uuid
 import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException
 
@@ -17,6 +19,24 @@ router = APIRouter()
 # 服务实例
 uploader = RemoteUploader()
 analyzer = VideoAnalyzer()
+
+
+def _safe_filename(original: str) -> str:
+    """
+    生成安全的存储文件名，避免跨端编码问题。
+    若原文件名含非ASCII或路径/URL非法字符（如?），则使用时间戳+UUID生成。
+    """
+    if not original or not original.strip():
+        return f"upload_{int(time.time())}_{uuid.uuid4().hex[:8]}.mp4"
+    ext = ".mp4"
+    if "." in original:
+        ext = "." + original.rsplit(".", 1)[-1].lower()
+    if ext not in (".mp4", ".mov", ".avi", ".mkv", ".webm"):
+        ext = ".mp4"
+    unsafe_chars = set('?\\/:*"<>| \t\n\r')
+    if any(ord(c) > 127 or c in unsafe_chars for c in original):
+        return f"upload_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
+    return original
 
 
 def allowed_file(filename: str) -> bool:
@@ -72,6 +92,11 @@ async def upload_video(
         raise HTTPException(status_code=400, detail="仅支持MP4格式文件")
     
     logger.info(f"收到视频上传请求: {file.filename}")
+
+    # 生成安全存储文件名，避免跨端编码导致路径被截断（如?被当作URL查询符）
+    safe_name = _safe_filename(file.filename)
+    if safe_name != file.filename:
+        logger.info(f"文件名含非常规字符，使用安全名: {safe_name}")
     
     # 保存临时文件
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_file:
@@ -80,8 +105,8 @@ async def upload_video(
         temp_file_path = temp_file.name
     
     try:
-        # 上传到远程服务器
-        upload_result = uploader.upload(temp_file_path, file.filename)
+        # 使用安全文件名上传到远程服务器
+        upload_result = uploader.upload(temp_file_path, safe_name)
         
         if not upload_result["success"]:
             raise HTTPException(status_code=500, detail=upload_result["message"])
