@@ -31,6 +31,15 @@ class Settings(BaseSettings):
     
     # YOLO配置
     yolo_model_path: str = "yolo/yolo11n.pt"
+
+    # YOLO 人体片段检测配置
+    person_yolo_model_path: str = "yolo/yolo26s.pt"
+    yolo_device: str = "cpu"
+    yolo_vid_stride: int = 3
+    yolo_imgsz: int = 640
+    yolo_conf: float = 0.5
+    yolo_min_segment_duration: float = 3.0
+    yolo_gap_tolerance_seconds: float = 0.5
     
     # 文件配置
     allowed_extensions: set = {"mp4"}

@@ -35,6 +35,18 @@ class VideoAnalysisResponse(BaseModel):
     analysis_error: Optional[str] = None
 
 
+class PersonSegment(BaseModel):
+    """人体出现时间段"""
+    start: float
+    end: float
+
+
+class PersonSegmentResponse(BaseModel):
+    """人体片段检测响应"""
+    segments: List[PersonSegment]
+    total_segments: int
+
+
 # ==================== MQ 消息模型 ====================
 
 class VideoTaskMetadata(BaseModel):

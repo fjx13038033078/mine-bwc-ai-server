@@ -2,16 +2,19 @@
 """
 API路由定义
 """
+import asyncio
 import os
 import tempfile
 import time
 import uuid
 import logging
-from fastapi import APIRouter, File, UploadFile, HTTPException
+from fastapi import APIRouter, File, UploadFile, HTTPException, Query
 
 from app.config import get_settings
-from app.services import RemoteUploader, VideoAnalyzer
-from app.models import VideoAnalysisResponse, UploadInfo
+from app.services import RemoteUploader, VideoAnalyzer, get_person_segment_detector
+from app.services.person_segment_detector import resolve_video_path
+from app.services.stream_analyzer import get_executor
+from app.models import VideoAnalysisResponse, UploadInfo, PersonSegmentResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -55,6 +58,7 @@ async def root():
         "version": settings.app_version,
         "endpoints": {
             "/upload-video": "POST - 上传视频并分析",
+            "/detect-person-segments": "POST - 检测视频中有人出现的时间段",
             "/health": "GET - 健康检查"
         }
     }
@@ -157,3 +161,49 @@ async def upload_video(
         # 清理临时文件
         if os.path.exists(temp_file_path):
             os.unlink(temp_file_path)
+
+
+@router.post("/detect-person-segments", response_model=PersonSegmentResponse)
+async def detect_person_segments_api(
+    video_path: str,
+    min_segment_duration: float = Query(
+        default=3.0, ge=0, description="最短有效片段时长（秒）"
+    ),
+    vid_stride: int = Query(default=3, ge=1, description="每 N 帧推理一次"),
+    imgsz: int = Query(default=640, ge=320, le=1280, description="推理输入尺寸"),
+    conf: float = Query(default=0.5, ge=0, le=1, description="检测置信度阈值"),
+):
+    """
+    人体片段检测接口
+
+    参数:
+        video_path: 视频文件路径（服务器本地路径）
+        min_segment_duration: 最短有效片段时长（秒），默认 3.0
+        vid_stride: 每 N 帧推理一次，默认 3
+        imgsz: 推理输入尺寸，默认 640
+        conf: 检测置信度阈值，默认 0.5
+    """
+    resolved_path = resolve_video_path(video_path)
+    detector = get_person_segment_detector()
+
+    logger.info("开始人体片段检测: %s", resolved_path)
+    try:
+        segments = await asyncio.get_event_loop().run_in_executor(
+            get_executor(),
+            lambda: detector.detect(
+                resolved_path,
+                min_segment_duration=min_segment_duration,
+                vid_stride=vid_stride,
+                imgsz=imgsz,
+                conf=conf,
+            ),
+        )
+        logger.info("人体片段检测完成: %s, 共 %d 个片段", resolved_path, len(segments))
+        return PersonSegmentResponse(segments=segments, total_segments=len(segments))
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception as e:
+        logger.error("人体片段检测失败: %s", e)
+        raise HTTPException(status_code=500, detail=f"视频检测失败: {str(e)}") from e
