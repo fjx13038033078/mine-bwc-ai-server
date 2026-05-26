@@ -112,7 +112,7 @@ async def upload_video(
             raise HTTPException(status_code=500, detail=upload_result["message"])
         
         remote_file_path = upload_result["remote_path"]
-        video_url = f"file://zby/inference/{remote_file_path}"
+        video_url = f"file://{remote_file_path}"
         
         # 视频分析
         try:
