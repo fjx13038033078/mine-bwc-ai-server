@@ -74,17 +74,13 @@ async def health_check():
 async def upload_video(
     file: UploadFile = File(...),
     max_tokens: int = 2048,
-    use_yolo: bool = False,
-    use_safety_analysis: bool = True
 ):
     """
     上传视频并进行分析
-    
+
     Args:
         file: 视频文件（MP4格式）
         max_tokens: 最大token数
-        use_yolo: 是否使用YOLO检测
-        use_safety_analysis: 是否进行安全分析
     """
     settings = get_settings()
     
@@ -116,16 +112,11 @@ async def upload_video(
             raise HTTPException(status_code=500, detail=upload_result["message"])
         
         remote_file_path = upload_result["remote_path"]
-        video_url = f"file://{remote_file_path}"
+        video_url = f"file://zby/inference/{remote_file_path}"
         
         # 视频分析
         try:
-            analysis_result = await analyzer.analyze(
-                video_url=video_url,
-                remote_file_path=remote_file_path,
-                use_yolo=use_yolo,
-                use_safety_analysis=use_safety_analysis
-            )
+            analysis_result = await analyzer.analyze(video_url=video_url)
             
             logger.info(f"视频分析完成: {file.filename}")
             
