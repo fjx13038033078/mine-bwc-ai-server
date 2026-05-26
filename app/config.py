@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     
     # AI模型服务配置
     vision_model_url: str = "http://172.18.1.1:22001/v1"
-    vision_model_name: str = "Qwen/Qwen3.6-27B"
+    vision_model_name: str = "hrylora"
     thinking_model_url: str = "http://172.18.1.1:22000/v1"
     thinking_model_name: str = "Qwen3-1.7B-Thinking"
     model_api_key: str = "EMPTY"
