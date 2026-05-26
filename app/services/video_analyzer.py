@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Dict, Any, List
 
-from langchain.chat_models import init_chat_model
+from openai import OpenAI
 
 from app.config import get_settings
 
@@ -66,9 +66,7 @@ class VideoAnalyzer:
 
     def _init_models(self):
         """初始化视觉模型"""
-        self.vision_model = init_chat_model(
-            model=self.settings.vision_model_name,
-            model_provider="openai",
+        self.vision_model = openAI(
             base_url=self.settings.vision_model_url,
             api_key=self.settings.model_api_key,
             timeout=self.settings.model_timeout
@@ -97,9 +95,18 @@ class VideoAnalyzer:
         ]
 
         try:
-            result = self.vision_model.invoke(vision_messages)
-            content = result.content
-            events_data = self._parse_events(content)
+            response = self.vision_model.chat.completions.create(
+                model=self.settings.vision_model_name,
+                messages=vision_messages,
+                max_tokens=4096,
+                temperature=1.0,
+                top_p=0.95,
+                presence_penalty=1.5,
+                extra_body={
+                    "top_k": 20,
+                },
+            )
+            events_data = self._parse_events(response.choices[0].message.content)
 
             return {
                 "success": True,
@@ -111,9 +118,17 @@ class VideoAnalyzer:
             logger.error(f"视频分析失败: {e}")
             raise Exception(f"调用AI模型失败: {str(e)}")
 
+    def _strip_thinking_content(self, content: str) -> str:
+        """去掉模型思考内容，只保留 </think> 之后的输出结果"""
+        for end_tag in ("</think>", ""):
+            if end_tag in content:
+                content = content.split(end_tag, 1)[1]
+                break
+        return content.strip()
+
     def _parse_events(self, content: str) -> List[Dict]:
         """解析事件JSON"""
-        cleaned = content.strip()
+        cleaned = _strip_thinking_content(content)
         if cleaned.startswith("```"):
             lines = cleaned.split('\n')
             cleaned = '\n'.join(lines[1:-1]) if len(lines) > 2 else cleaned
