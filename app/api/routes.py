@@ -11,9 +11,9 @@ import logging
 from fastapi import APIRouter, File, UploadFile, HTTPException, Query
 
 from app.config import get_settings
-from app.services import RemoteUploader, VideoAnalyzer, get_person_segment_detector
+from app.services import RemoteUploader, get_person_segment_detector
 from app.services.person_segment_detector import resolve_video_path
-from app.services.stream_analyzer import get_executor
+from app.services.stream_analyzer import get_stream_analyzer, get_executor
 from app.models import VideoAnalysisResponse, UploadInfo, PersonSegmentResponse
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ router = APIRouter()
 
 # 服务实例
 uploader = RemoteUploader()
-analyzer = VideoAnalyzer()
+analyzer = get_stream_analyzer()  # 统一使用 StreamVideoAnalyzer，video_analyzer.py 已废弃
 
 
 def _safe_filename(original: str) -> str:
@@ -114,9 +114,11 @@ async def upload_video(
         remote_file_path = upload_result["remote_path"]
         video_url = f"file://{remote_file_path}"
         
-        # 视频分析
+        # 视频分析（使用 StreamVideoAnalyzer.analyze_url，与 MQ 主流程共享同一分析器）
         try:
-            analysis_result = await analyzer.analyze(video_url=video_url)
+            analysis_result = await asyncio.get_event_loop().run_in_executor(
+                get_executor(), lambda: analyzer.analyze_url(video_url)
+            )
             
             logger.info(f"视频分析完成: {file.filename}")
             

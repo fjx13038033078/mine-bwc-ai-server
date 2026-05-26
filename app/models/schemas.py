@@ -93,6 +93,7 @@ class VideoTaskResult(BaseModel):
     process_time: Optional[float] = None  # 处理耗时（秒）
     violation_frame: Optional[Any] = None  # 违规帧图像（OpenCV格式，不序列化）
     violation_timestamp: Optional[float] = None  # 违规发生的视频时间戳
+    raw_analysis: Optional[str] = None  # 视觉模型原始分析文本，供 ai_description 兜底
 
 
 # ==================== 结果回传消息模型 ====================

@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-视频流分析服务
-直接从预签名URL流式读取视频，不下载到本地
+视频流分析服务（整合版）
+- MQ 主流程：analyze_from_stream，消费 RabbitMQ 任务，YOLO + 视觉模型 + 安全二次审查
+- HTTP 接口：analyze_url，供 /upload-video 直接调用
+原 video_analyzer.py 已废弃，本文件为唯一分析入口。
 """
 import os
 import json
@@ -10,9 +12,8 @@ import cv2
 from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
+from openai import OpenAI
 from langchain.chat_models import init_chat_model
-from langchain.tools import tool
-from langchain.agents import create_agent
 
 from app.config import get_settings
 from app.utils.json_extractor import extract_safety_report
@@ -20,24 +21,45 @@ from app.models.schemas import VideoTaskMessage, VideoTaskResult, EventInfo
 
 logger = logging.getLogger(__name__)
 
-# 视频分析提示词
+# ─────────────────────────── Prompts ───────────────────────────
+
+# 整合自 video_analyzer.py：含 JSON 示例、start_second/end_second、明确禁止 markdown
 ANALYSIS_PROMPT = '''
 你是一位高度专业的铜矿生产视频行为分析专家，同时具备严谨的数据处理能力。
-你的任务是逐帧分析视频流，同时识别出视频中的生产行为，每一个事件由一个或多个相关帧组成，代表一个较完整的行为过程。
+你的任务是检查视频中是否有违规行为，同时读取叠加在帧图像上的元数据（日期、时间、用户编号、单位编号、序列号），并在违规行为开始到结束期间记录这些元数据。
 
 任务目标：
-1.视频帧与元数据解析：处理每一帧视频图像，精准提取元数据（日期、时间、用户编号、单位编号、序列号）。
-2.事件识别与描述：识别并描述视频中的行为事件。
-3.事件记录与关联元数据：记录事件的开始时间和结束时间，关联相关元数据。
-4.输出要求：将所有事件记录汇总为JSON数组，若未识别到任何事件则输出[]。
+1. 视频帧与元数据解析：处理每一帧视频图像，精准提取以下五项元数据：
+   日期、时间、用户编号、单位编号、序列号。
+2. 事件记录与关联元数据：对每个违规行为，记录「开始时间」和「结束时间」，并关联元数据。
+3. 输出要求：
+   - 将所有违规行为记录为可被机器直接解析的 JSON 数组，无需任何 Markdown 代码块标记。
+   - 若未识别到任何违规事件，则输出空数组 []。
+   - 每个 JSON 对象必须包含以下字段：
+     event_description（对违规行为的详细说明）、date（YYYY-MM-DD）、
+     start_time（事件开始时间 HH:MM:SS，视频内相对时间）、
+     end_time（事件结束时间 HH:MM:SS，视频内相对时间）、
+     user_number、unit_number、serial_number、
+     start_second（事件在视频第几秒开始，数字）、
+     end_second（事件在视频第几秒结束，数字）。
 
-【重要】start_time 和 end_time 必须表示「事件在视频中的位置」，即从视频开始（00:00:00）算起的相对时间。
-- 格式：HH:MM:SS 或 MM:SS，例如 00:01:20 表示视频第 1 分 20 秒处。
-- 禁止使用画面上的录制时钟时间（如 18:18:42）作为事件时间，那会导致错误。
-- date 字段可保留画面上的日期；start_time/end_time 必须是视频内相对时间。
+【重要】start_time/end_time/start_second/end_second 必须是从视频开始（00:00:00）算起的相对时间，
+禁止使用画面上的录制时钟时间（如 18:18:42），那会导致错误。date 字段可保留画面上的日期。
 
-每个JSON对象必须包含以下字段：
-event_description, date, start_time, end_time, user_number, unit_number, serial_number
+JSON 输出示例：
+[
+    {
+        "event_description": "作业人员未佩戴安全帽进入作业区",
+        "date": "2025-12-09",
+        "start_time": "00:00:23",
+        "end_time": "00:00:45",
+        "user_number": "D14",
+        "unit_number": "tky25",
+        "serial_number": "Q461585",
+        "start_second": 23,
+        "end_second": 45
+    }
+]
 '''
 
 SAFETY_ANALYSIS_PROMPT = '''
@@ -55,110 +77,120 @@ _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="video_analyzer
 
 class StreamVideoAnalyzer:
     """
-    流式视频分析器
-    直接从预签名URL读取视频流，不下载到本地磁盘
+    流式视频分析器（整合版，唯一分析入口）
+    - MQ 流程：analyze_from_stream
+    - HTTP 流程：analyze_url
     """
-    
+
     def __init__(self):
         self.settings = get_settings()
-        self._vision_model = None
-        self._thinking_model = None
-        self._yolo_model = None
-    
+        self._vision_client: Optional[OpenAI] = None   # 原生 OpenAI 客户端，支持 temperature 等参数
+        self._thinking_model = None                     # LangChain 模型，用于安全合规二次审查
+
     @property
-    def vision_model(self):
-        """懒加载视觉模型"""
-        if self._vision_model is None:
-            self._vision_model = init_chat_model(
-                model=self.settings.vision_model_name,
-                model_provider="openai",
+    def vision_client(self) -> OpenAI:
+        """懒加载视觉模型客户端（原生 openai，可传 temperature/top_p/presence_penalty 等）"""
+        if self._vision_client is None:
+            self._vision_client = OpenAI(
                 base_url=self.settings.vision_model_url,
                 api_key=self.settings.model_api_key,
-                timeout=self.settings.model_timeout
+                timeout=self.settings.model_timeout,
             )
-        return self._vision_model
-    
+        return self._vision_client
+
     @property
     def thinking_model(self):
-        """懒加载思考模型"""
+        """懒加载安全合规思考模型（LangChain）"""
         if self._thinking_model is None:
             self._thinking_model = init_chat_model(
                 model=self.settings.thinking_model_name,
                 model_provider="openai",
                 base_url=self.settings.thinking_model_url,
                 api_key=self.settings.model_api_key,
-                timeout=self.settings.model_timeout
+                timeout=self.settings.model_timeout,
             )
         return self._thinking_model
-    
-    def _create_stream_yolo_tool(self, video_url: str):
+
+    def _call_vision_model(self, video_url: str, extra_text: str = "") -> str:
         """
-        创建流式YOLO检测工具
-        直接从URL读取视频流，不下载到本地
+        调用视觉模型，返回原始文本。
+        使用原生 OpenAI 客户端，传入与 video_analyzer.py 一致的推理参数。
+        """
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "video_url", "video_url": {"url": video_url}},
+                    {"type": "text", "text": ANALYSIS_PROMPT + extra_text},
+                ],
+            }
+        ]
+        response = self.vision_client.chat.completions.create(
+            model=self.settings.vision_model_name,
+            messages=messages,
+            max_tokens=4096,
+            temperature=1.0,
+            top_p=0.95,
+            presence_penalty=1.5,
+            extra_body={"top_k": 20},
+        )
+        return response.choices[0].message.content or ""
+    
+    def _run_yolo_detection(self, video_url: str) -> List[str]:
+        """
+        本地直接运行 YOLO 流式检测，不依赖 LLM tool calling。
+        返回逐秒检测结果列表，供后续拼入视觉模型 prompt。
         """
         settings = self.settings
-        
-        @tool(description='detection')
-        def yolo_detection():
-            """使用YOLO检测视频中的物体（流式读取）"""
-            logger.info(f"[YOLO] 开始流式读取视频: {video_url[:100]}...")
-            
-            # 检查YOLO模型
-            if not os.path.exists(settings.yolo_model_path):
-                logger.warning(f"YOLO模型不存在: {settings.yolo_model_path}")
-                return ["YOLO模型不存在，跳过检测"]
-            
-            try:
-                from ultralytics import YOLO
-                model = YOLO(settings.yolo_model_path)
-                
-                # 直接从URL流式读取视频（核心：不下载到本地）
-                cap = cv2.VideoCapture(video_url)
-                
-                if not cap.isOpened():
-                    logger.error(f"无法打开视频流: {video_url[:100]}...")
-                    return ["无法打开视频流"]
-                
-                fps = cap.get(cv2.CAP_PROP_FPS)
-                frame_interval = int(fps) if fps > 0 else 30
-                
-                detection_results = []
-                frame_count = 0
-                second_count = 0
-                max_seconds = 60  # 最多处理60秒
-                
-                while cap.isOpened() and second_count < max_seconds:
-                    success, frame = cap.read()
-                    if not success:
-                        break
-                    
-                    if frame_count % frame_interval == 0:
-                        second_count += 1
-                        results = model(frame, verbose=False)
-                        
-                        objects = []
-                        for box in results[0].boxes:
-                            class_id = int(box.cls[0])
-                            class_name = results[0].names[class_id]
-                            objects.append(class_name)
-                        
-                        if objects:
-                            detection_results.append(
-                                f"第{second_count}秒检测到: {', '.join(set(objects))}"
-                            )
-                    
-                    frame_count += 1
-                
-                cap.release()
-                logger.info(f"[YOLO] 流式检测完成，处理了{second_count}秒视频")
-                
-                return detection_results if detection_results else ["未检测到特定物体"]
-                
-            except Exception as e:
-                logger.error(f"YOLO检测失败: {e}")
-                return [f"YOLO检测失败: {str(e)}"]
-        
-        return yolo_detection
+        logger.info(f"[YOLO] 开始流式读取视频: {video_url[:100]}...")
+
+        if not os.path.exists(settings.yolo_model_path):
+            logger.warning(f"YOLO模型不存在: {settings.yolo_model_path}，跳过检测")
+            return []
+
+        try:
+            from ultralytics import YOLO
+            model = YOLO(settings.yolo_model_path)
+
+            cap = cv2.VideoCapture(video_url)
+            if not cap.isOpened():
+                logger.error(f"无法打开视频流: {video_url[:100]}...")
+                return []
+
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frame_interval = max(int(fps), 1) if fps > 0 else 30
+
+            detection_results: List[str] = []
+            frame_count = 0
+            second_count = 0
+            max_seconds = 60
+
+            while cap.isOpened() and second_count < max_seconds:
+                success, frame = cap.read()
+                if not success:
+                    break
+
+                if frame_count % frame_interval == 0:
+                    second_count += 1
+                    results = model(frame, verbose=False)
+                    objects = [
+                        results[0].names[int(box.cls[0])]
+                        for box in results[0].boxes
+                    ]
+                    if objects:
+                        detection_results.append(
+                            f"第{second_count}秒检测到: {', '.join(set(objects))}"
+                        )
+
+                frame_count += 1
+
+            cap.release()
+            logger.info(f"[YOLO] 流式检测完成，处理了 {second_count} 秒视频，共 {len(detection_results)} 条结果")
+            return detection_results
+
+        except Exception as e:
+            logger.error(f"YOLO检测失败: {e}")
+            return []
     
     def analyze_from_stream(self, task: VideoTaskMessage) -> VideoTaskResult:
         """
@@ -177,35 +209,31 @@ class StreamVideoAnalyzer:
         logger.info(f"[分析] 预签名URL: {task.presigned_url[:80]}...")
         
         try:
-            # 构建消息
+            # 第一步：本地 YOLO 检测（不依赖 LLM tool calling）
+            yolo_results = self._run_yolo_detection(task.presigned_url)
+            yolo_summary = (
+                "\n\n【YOLO辅助检测结果】\n" + "\n".join(yolo_results)
+                if yolo_results else ""
+            )
+
+            # 第二步：直接调用视觉模型（不使用 agent，避免 tool_choice="auto" 报错）
             vision_messages = [
                 {
                     "role": "user",
                     "content": [
                         {"type": "video_url", "video_url": {"url": task.presigned_url}},
-                        {"type": "text", "text": ANALYSIS_PROMPT}
+                        {"type": "text", "text": ANALYSIS_PROMPT + yolo_summary}
                     ]
                 }
             ]
-            
-            # 创建YOLO工具（使用预签名URL）
-            yolo_tool = self._create_stream_yolo_tool(task.presigned_url)
-            
-            # 创建Agent并分析
-            agent = create_agent(
-                self.vision_model,
-                [yolo_tool],
-                system_prompt="您可以使用工具来辅助进行视频理解。"
-            )
-            
-            result = agent.invoke({"messages": vision_messages})
-            content = result["messages"][-1].content
-            
+
+            content = self._call_vision_model(task.presigned_url, yolo_summary)
+
             # 解析事件
             events_data = self._parse_events(content)
-            
-            # 安全分析
-            unsafe_events = self._analyze_safety_sync(events_data)
+
+            # 安全分析（thinking 模型不可用时降级：直接把 vision 模型识别的事件当 unsafe_events）
+            unsafe_events = self._analyze_safety_sync(events_data, fallback_events=events_data)
             
             process_time = time.time() - start_time
             logger.info(f"[分析] 任务完成: taskId={task.task_id}, 耗时={process_time:.2f}s, 事件数={len(events_data)}")
@@ -245,13 +273,14 @@ class StreamVideoAnalyzer:
                 unsafe_events=[EventInfo(**e) for e in unsafe_events] if unsafe_events else None,
                 process_time=process_time,
                 violation_frame=violation_frame,
-                violation_timestamp=violation_timestamp
+                violation_timestamp=violation_timestamp,
+                raw_analysis=content  # 保留原始文本，供 ai_description 兜底
             )
-            
+
         except Exception as e:
             process_time = time.time() - start_time
             logger.error(f"[分析] 任务失败: taskId={task.task_id}, error={e}")
-            
+
             return VideoTaskResult(
                 task_id=task.task_id,
                 video_id=task.video_id,
@@ -259,30 +288,118 @@ class StreamVideoAnalyzer:
                 error_message=str(e),
                 process_time=process_time
             )
-    
+
+    def analyze_url(self, video_url: str) -> Dict[str, Any]:
+        """
+        HTTP 接口入口（替代已废弃的 VideoAnalyzer.analyze）。
+        直接调用视觉模型分析指定 URL 的视频，返回事件列表字典。
+        不包含 YOLO 检测和安全合规二次审查（HTTP 上传场景通常不需要）。
+        """
+        import time as _time
+        logger.info(f"[analyze_url] 开始分析: {video_url[:80]}...")
+        t0 = _time.time()
+        content = self._call_vision_model(video_url)
+        events_data = self._parse_events(content)
+        elapsed = _time.time() - t0
+        logger.info(f"[analyze_url] 分析完成，耗时={elapsed:.2f}s，事件数={len(events_data)}")
+        return {
+            "success": True,
+            "events": events_data,
+            "total_events": len(events_data),
+        }
+
     def _parse_events(self, content: str) -> List[Dict]:
-        """解析事件JSON"""
+        """
+        从模型回复中提取事件 JSON 列表。
+        依次尝试：
+          1. 去掉 markdown 代码块后直接 json.loads
+          2. 从文本中定位第一个 '[' 到最后一个 ']' 的片段
+          3. 从文本中定位第一个 '{' 到最后一个 '}' 的片段（单对象包成列表）
+        全部失败时记录原始内容供排查，返回空列表。
+        """
+        # 记录原始响应（前 500 字符）便于排查
+        preview = content[:500].replace('\n', ' ') if content else ''
+        logger.info(f"[parse_events] 模型原始回复(前500字): {preview}")
+
+        if not content or not content.strip():
+            logger.warning("[parse_events] 模型返回空内容")
+            return []
+
         cleaned = content.strip()
+
+        # 0. 剥离思维链：hrylora 等推理模型会在 </think> 前输出推理过程，真正结果在其后
+        for end_tag in ("</think>", "<|im_end|>"):
+            if end_tag in cleaned:
+                cleaned = cleaned.split(end_tag, 1)[1].strip()
+                logger.info(f"[parse_events] 检测到思维链标记 {end_tag!r}，已剥离，剩余内容: {cleaned[:200]}")
+                break
+
+        # 1. 去掉 markdown 代码块标记
         if cleaned.startswith("```"):
             lines = cleaned.split('\n')
-            cleaned = '\n'.join(lines[1:-1]) if len(lines) > 2 else cleaned
-        
+            # 去掉首行（```json 或 ```）和末尾的 ```
+            inner_lines = lines[1:]
+            if inner_lines and inner_lines[-1].strip() == "```":
+                inner_lines = inner_lines[:-1]
+            cleaned = '\n'.join(inner_lines).strip()
+
+        # 2. 直接尝试解析
         try:
             data = json.loads(cleaned)
-            return data if isinstance(data, list) else [data] if data else []
+            return self._normalize_events(data)
         except json.JSONDecodeError:
-            logger.warning("无法解析JSON，返回空列表")
-            return []
+            pass
+
+        # 3. 提取第一个 '[' … 最后一个 ']' 片段
+        start = cleaned.find('[')
+        end = cleaned.rfind(']')
+        if start != -1 and end != -1 and end > start:
+            try:
+                data = json.loads(cleaned[start:end + 1])
+                return self._normalize_events(data)
+            except json.JSONDecodeError:
+                pass
+
+        # 4. 提取第一个 '{' … 最后一个 '}' 片段（单对象）
+        start = cleaned.find('{')
+        end = cleaned.rfind('}')
+        if start != -1 and end != -1 and end > start:
+            try:
+                data = json.loads(cleaned[start:end + 1])
+                return self._normalize_events(data)
+            except json.JSONDecodeError:
+                pass
+
+        # 全部失败：打 WARNING 并记录原始内容
+        logger.warning(f"[parse_events] 无法解析JSON，原始回复: {content[:300]}")
+        return []
+
+    def _normalize_events(self, data) -> List[Dict]:
+        """将解析结果统一为列表格式"""
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            # 模型有时返回 {"events": [...]} 包装
+            for key in ("events", "结果", "事件列表", "event_list"):
+                if key in data and isinstance(data[key], list):
+                    return [item for item in data[key] if isinstance(item, dict)]
+            return [data]
+        return []
     
-    def _analyze_safety_sync(self, events: List[Dict]) -> List[Dict]:
-        """同步安全分析"""
+    def _analyze_safety_sync(self, events: List[Dict],
+                             fallback_events: Optional[List[Dict]] = None) -> List[Dict]:
+        """
+        同步安全分析。
+        若 thinking 模型不可用（连接失败等），自动降级为直接使用 vision 模型的事件描述
+        作为 unsafe_events，由 result_publisher 判断是否有违规。
+        """
         unsafe_events = []
-        
+
         for event in events:
             description = event.get('event_description', event.get('事件描述', ''))
             if not description:
                 continue
-            
+
             try:
                 safety_result = self.thinking_model.invoke([
                     {"role": "user", "content": SAFETY_ANALYSIS_PROMPT + description}
@@ -305,7 +422,25 @@ class StreamVideoAnalyzer:
                 })
             except Exception as e:
                 logger.warning(f"安全分析失败: {e}")
-        
+
+        # thinking 模型全部失败且有 fallback：降级使用 vision 模型原始事件
+        if not unsafe_events and fallback_events:
+            logger.warning("[safety] thinking 模型不可用，降级为 vision 事件描述作为 unsafe_events")
+            for ev in fallback_events:
+                desc = ev.get('event_description', ev.get('事件描述', ''))
+                if desc:
+                    unsafe_events.append({
+                        "event_description": desc,
+                        "date": ev.get('date', ev.get('日期', '')),
+                        "start_time": ev.get('start_time', ev.get('开始时间', '')),
+                        "end_time": ev.get('end_time', ev.get('结束时间', '')),
+                        "start_second": ev.get('start_second'),
+                        "end_second": ev.get('end_second'),
+                        "user_number": ev.get('user_number', ev.get('用户编号', '')),
+                        "unit_number": ev.get('unit_number', ev.get('单位编号', '')),
+                        "serial_number": ev.get('serial_number', ev.get('序列号', ''))
+                    })
+
         return unsafe_events
     
     def _sanitize_violation_times(self, unsafe_events: List[Dict], video_duration: float) -> None:

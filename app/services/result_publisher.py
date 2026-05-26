@@ -84,7 +84,7 @@ class ResultPublisher:
             has_violation = bool(task_result.unsafe_events)
             violation_type = None
             ai_description = None
-            
+
             violation_start_second = None
             violation_end_second = None
             if has_violation:
@@ -113,6 +113,17 @@ class ResultPublisher:
                                 timestamp=task_result.violation_timestamp
                             )
             
+            # 无论有无违规，都尽量填 ai_description，让前端能展示分析报告
+            if not ai_description:
+                if task_result.events:
+                    # 用 vision 模型解析出的事件描述
+                    descs = [e.event_description for e in task_result.events if e.event_description]
+                    if descs:
+                        ai_description = "\n".join(descs)
+                if not ai_description and task_result.raw_analysis:
+                    # 最终兜底：用原始分析文本（截取前 2000 字）
+                    ai_description = task_result.raw_analysis[:2000]
+
             # 构建结果消息
             result_message = VideoAnalysisResultMessage(
                 task_id=task_result.task_id,

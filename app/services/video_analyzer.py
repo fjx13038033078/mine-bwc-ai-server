@@ -1,7 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-视频分析服务
+【已废弃】视频分析服务
+此文件已被 stream_analyzer.py 完全替代，请勿继续使用。
+- MQ 主流程请使用 StreamVideoAnalyzer.analyze_from_stream
+- HTTP 接口请使用 StreamVideoAnalyzer.analyze_url
+保留此文件仅供参考，后续可安全删除。
 """
+import warnings
+warnings.warn(
+    "video_analyzer.py 已废弃，请使用 stream_analyzer.StreamVideoAnalyzer",
+    DeprecationWarning,
+    stacklevel=2,
+)
 import json
 import logging
 from typing import Dict, Any, List
@@ -66,7 +76,7 @@ class VideoAnalyzer:
 
     def _init_models(self):
         """初始化视觉模型"""
-        self.vision_model = openAI(
+        self.vision_model = OpenAI(
             base_url=self.settings.vision_model_url,
             api_key=self.settings.model_api_key,
             timeout=self.settings.model_timeout
