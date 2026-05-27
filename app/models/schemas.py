@@ -82,6 +82,67 @@ class VideoTaskMessage(BaseModel):
         populate_by_name = True
 
 
+# ==================== 视频切割任务消息模型 ====================
+
+class VideoClipTaskMessage(BaseModel):
+    """Java 端发给 Python 的切割任务消息"""
+    task_id: str = Field(..., alias="taskId")
+    video_id: int = Field(..., alias="videoId")
+    presigned_url: str = Field(..., alias="presignedUrl")
+    min_segment_duration: float = Field(3.0, alias="minSegmentDuration")
+    vid_stride: int = Field(3, alias="vidStride")
+    conf: float = Field(0.5)
+
+    class Config:
+        populate_by_name = True
+
+
+class ClipInfo(BaseModel):
+    """单个切片的元数据"""
+    clip_index: int = Field(..., alias="clipIndex")
+    object_name: str = Field(..., alias="objectName")
+    url: str
+    start_second: float = Field(..., alias="startSecond")
+    end_second: float = Field(..., alias="endSecond")
+    duration_seconds: float = Field(..., alias="durationSeconds")
+    file_size: int = Field(..., alias="fileSize")
+
+    class Config:
+        populate_by_name = True
+
+
+class VideoClipResultMessage(BaseModel):
+    """Python 端回传给 Java 的切割结果消息"""
+    task_id: str = Field(..., alias="taskId")
+    video_id: int = Field(..., alias="videoId")
+    status: str  # SUCCESS / FAILED
+    clips: List[ClipInfo] = Field(default_factory=list)
+    error_message: Optional[str] = Field(None, alias="errorMessage")
+
+    class Config:
+        populate_by_name = True
+
+    def to_java_dict(self) -> Dict[str, Any]:
+        return {
+            "taskId": self.task_id,
+            "videoId": self.video_id,
+            "status": self.status,
+            "clips": [
+                {
+                    "clipIndex": c.clip_index,
+                    "objectName": c.object_name,
+                    "url": c.url,
+                    "startSecond": c.start_second,
+                    "endSecond": c.end_second,
+                    "durationSeconds": c.duration_seconds,
+                    "fileSize": c.file_size,
+                }
+                for c in self.clips
+            ],
+            "errorMessage": self.error_message,
+        }
+
+
 class VideoTaskResult(BaseModel):
     """视频任务处理结果（内部使用）"""
     task_id: str

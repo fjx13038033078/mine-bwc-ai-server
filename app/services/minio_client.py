@@ -5,6 +5,7 @@ MinIO 客户端服务
 """
 import io
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -129,6 +130,51 @@ def upload_screenshot(
     except Exception as e:
         logger.error(f"截图上传失败: {e}", exc_info=True)
         return False, None
+
+
+def upload_video_clip(
+    local_path: str,
+    video_id: int,
+    clip_index: int,
+) -> tuple:
+    """
+    上传切片视频文件到 MinIO。
+    返回 (object_name, url, file_size)。
+    """
+    import uuid as _uuid
+    settings = get_settings()
+    client = get_minio_client()
+
+    if client is None:
+        raise RuntimeError("MinIO 客户端不可用，无法上传切片")
+
+    bucket = settings.minio_bucket
+    if not ensure_bucket_exists(bucket):
+        raise RuntimeError(f"存储桶 {bucket} 不存在且无法创建")
+
+    date_path = datetime.now().strftime("%Y/%m/%d")
+    object_name = (
+        f"{settings.clip_minio_prefix}/{date_path}/"
+        f"clip_{video_id}_{clip_index}_{_uuid.uuid4().hex[:8]}.mp4"
+    )
+    file_size = os.path.getsize(local_path)
+
+    with open(local_path, "rb") as f:
+        client.put_object(
+            bucket_name=bucket,
+            object_name=object_name,
+            data=f,
+            length=file_size,
+            content_type="video/mp4",
+        )
+
+    url = client.presigned_get_object(
+        bucket_name=bucket,
+        object_name=object_name,
+        expires=timedelta(hours=24),
+    )
+    logger.info(f"切片上传成功: {object_name} ({file_size / 1024 / 1024:.1f} MB)")
+    return object_name, url, file_size
 
 
 def capture_violation_frame(video_url: str, timestamp: float = 0) -> Optional[np.ndarray]:

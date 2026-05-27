@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     yolo_model_path: str = "yolo/yolo11n.pt"
 
     # YOLO 人体片段检测配置
-    person_yolo_model_path: str = "yolo/yolo26s.pt"
+    person_yolo_model_path: str = "yolo/yolo11n.pt"
     yolo_device: str = "cpu"
     yolo_vid_stride: int = 3
     yolo_imgsz: int = 640
@@ -45,11 +45,11 @@ class Settings(BaseSettings):
     allowed_extensions: set = {"mp4"}
     max_tokens: int = 2048
     
-    # RabbitMQ 配置
-    rabbitmq_host: str = "192.168.26.245"
+    # RabbitMQ 配置（必须与 Java 端一致）
+    rabbitmq_host: str = "localhost"  # 与 Java 端 application-common.yml 一致
     rabbitmq_port: int = 5672
-    rabbitmq_user: str = "admin"
-    rabbitmq_password: str = "admin123"
+    rabbitmq_user: str = "guest"      # 与 Java 端一致
+    rabbitmq_password: str = "guest"  # 与 Java 端一致
     rabbitmq_vhost: str = "/"
     
     # MQ 任务队列配置（消费Java端发来的任务）
@@ -63,12 +63,24 @@ class Settings(BaseSettings):
     result_queue: str = "video.result.queue"
     result_routing_key: str = "video.result.finish"
     
-    # MinIO 配置（用于上传违规截图）
-    minio_endpoint: str = "192.168.26.245:9000"
+    # MinIO 配置（用于上传违规截图和视频切片）
+    minio_endpoint: str = "192.168.26.214:9000"
     minio_access_key: str = "ruoyi"
     minio_secret_key: str = "ruoyi123"
-    minio_bucket: str = "violation-images"
+    minio_bucket: str = "zhifajiluyi"
     minio_secure: bool = False
+    clip_minio_prefix: str = "clips"
+
+    # ffmpeg 可执行文件路径
+    ffmpeg_binary: str = r"C:\Users\范佳兴\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-8.1.1-full_build\bin\ffmpeg.exe"
+
+    # 视频切割 MQ 配置
+    clip_mq_exchange: str = "video.clip.exchange"
+    clip_mq_queue: str = "video.clip.queue"
+    clip_mq_routing_key: str = "video.clip.#"
+    clip_result_exchange: str = "video.clip.result.exchange"
+    clip_result_queue: str = "video.clip.result.queue"
+    clip_result_routing_key: str = "video.clip.result.finish"
     
     class Config:
         env_file = ".env"

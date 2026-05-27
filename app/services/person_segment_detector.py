@@ -44,13 +44,14 @@ def close_segment(
     try_append_segment(segments, start_time, end_time, min_segment_duration)
 
 
-def get_video_fps(video_path: str) -> float:
+def get_video_info(video_path: str) -> tuple[float, int]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise ValueError(f"无法打开视频: {video_path}")
     fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     cap.release()
-    return fps
+    return fps, frame_count
 
 
 def resolve_video_path(video_path: str) -> str:
@@ -103,8 +104,23 @@ class PersonSegmentDetector:
             else settings.yolo_gap_tolerance_seconds
         )
 
-        fps = get_video_fps(video_path)
+        fps, frame_count = get_video_info(video_path)
         gap_tolerance_frames = max(1, int(fps * gap_tolerance_seconds))
+        expected_infer_count = frame_count // vid_stride if frame_count > 0 else 0
+        use_half = device not in ("cpu", "CPU", "")
+
+        logger.info(
+            "开始 YOLO 人体片段检测: video=%s, fps=%.2f, frames=%s, vid_stride=%s, "
+            "expected_infer=%s, device=%s, imgsz=%s, conf=%.2f",
+            video_path,
+            fps,
+            frame_count,
+            vid_stride,
+            expected_infer_count,
+            device,
+            imgsz,
+            conf,
+        )
 
         segments: list[tuple[float, float]] = []
         in_segment = False
@@ -119,12 +135,25 @@ class PersonSegmentDetector:
             conf=conf,
             classes=[0],
             device=device,
-            half=True,
+            half=use_half,
             imgsz=imgsz,
             verbose=False,
         ):
             infer_count += 1
             frame_idx = (infer_count - 1) * vid_stride
+            if infer_count == 1 or infer_count % 100 == 0:
+                if expected_infer_count > 0:
+                    progress = infer_count / expected_infer_count * 100
+                    logger.info(
+                        "YOLO 检测进度: %s/%s (%.1f%%), 当前约 %.1fs, 已发现片段=%s",
+                        infer_count,
+                        expected_infer_count,
+                        min(progress, 100.0),
+                        frame_idx / fps,
+                        len(segments),
+                    )
+                else:
+                    logger.info("YOLO 检测进度: infer_count=%s, 当前约 %.1fs", infer_count, frame_idx / fps)
 
             if has_person(result):
                 if not in_segment:
@@ -142,6 +171,7 @@ class PersonSegmentDetector:
                 segments, segment_start_frame, last_person_frame, fps, min_segment_duration
             )
 
+        logger.info("YOLO 人体片段检测完成: infer_count=%s, segments=%s", infer_count, len(segments))
         return [{"start": round(s, 3), "end": round(e, 3)} for s, e in segments]
 
 
