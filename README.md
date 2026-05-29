@@ -1,151 +1,136 @@
-# 视频上传与分析API
+# cameraAi — 执法视频 AI 检测与视频切割服务（FastAPI）
 
-基于 FastAPI 的视频分析服务，支持两种模式：
-1. **HTTP 同步模式**：视频上传至远程服务器并立即返回分析结果
-2. **MQ 异步模式**：从 RabbitMQ 消费视频检测任务，流式读取 MinIO 预签名URL
+`cameraAi` 是执法记录仪智能分析系统的 **AI 推理服务**，基于 **FastAPI** 构建。它通过 **RabbitMQ** 与 Java 后端（`RuoYi-Cloud-Plus / ruoyi-camera`）解耦协作，承担两条核心业务链路的计算任务：
 
-## 功能特性
+- **AI 违规检测**：用视觉大模型识别执法视频中的安全违规行为，并通过 RAG 匹配对应的规章制度；
+- **视频人体切割**：用 YOLO 检测视频中有人出现的时段，再用 FFmpeg 切出有效片段。
 
-- 视频文件上传至远程服务器（SFTP）
-- AI 视觉模型分析视频内容（Qwen3-VL）
-- 矿山安全违规行为检测（Qwen3-Thinking）
-- 可选的 YOLO 物体检测
-- **RabbitMQ 异步任务消费**（流式读取，不下载到本地）
+> 配套仓库：`RuoYi-Cloud-Plus / ruoyi-camera`（业务编排）、`plus-ui`（Vue3 前端）。
 
-## 项目结构
+---
+
+## 一、整体架构
+
+```
+                         RabbitMQ
+ruoyi-camera ───── video.upload.queue ─────►┐
+(Java 后端)  ◄──── video.result.queue ──────┤   cameraAi (FastAPI)
+             ───── video.clip.queue ───────►│   ├─ mq_consumer          消费 AI 检测任务
+             ◄──── video.clip.result.queue ─┘   ├─ clip_mq_consumer     消费切割任务
+                                                ├─ stream_analyzer      视觉模型 + YOLO + RAG
+                                                ├─ person_segment_detector  YOLO 人体检测
+                                                ├─ video_clipper        FFmpeg 切割
+                                                └─ result/clip_result_publisher  回传结果
+        外部依赖：MinIO（对象存储）、视觉模型、思考模型、Embedding（ModelScope）
+```
+
+应用启动时（`app/main.py` 的 lifespan）会同时拉起 **AI 检测消费者** 与 **切割消费者**，并后台预热 YOLO 模型。
+
+---
+
+## 二、AI 违规检测链路
+
+入口：`stream_analyzer.StreamVideoAnalyzer.analyze_from_stream`（MQ）/ `analyze_url`（HTTP）。
+
+1. **YOLO 辅助检测**：本地流式跑 YOLO，逐秒输出辅助信息拼入提示词；
+2. **视觉模型识别**：调用视觉模型（`hrylora`）分析视频，输出违规事件 JSON（描述、起止时间、用户/单位/序列号等）；
+3. **RAG 规章制度匹配**：
+   - 从 `knowledge/*.docx` 加载规章制度，**按单条规章拆分**后用 Embedding（`Qwen3-Embedding-8B` @ ModelScope）建向量库（`InMemoryVectorStore`，懒加载缓存）；
+   - 对每条违规行为做相似度检索，再由思考模型（`Qwen3-1.7B-Thinking`）基于检索结果给出对应规章；思考模型不可用时**回退使用检索到的规章原文**，保证 `regulations` 不为空；
+4. **关键帧截图**：用 OpenCV 截取违规起始帧，上传 MinIO；
+5. **结果回传**：`result_publisher` 发送 `video.result.queue`，含 `aiDescription`、`eventsJson`（每条事件含 `regulations`）、`screenshotUrl` 等。
+
+---
+
+## 三、视频人体切割链路
+
+入口：`clip_mq_consumer` 消费 `video.clip.queue`。
+
+1. **下载原视频**：通过预签名 URL 下载到临时文件；
+2. **人体片段检测**：`person_segment_detector` 用 YOLO 识别有人出现的时间段（支持最短片段时长、抽帧步长、置信度等参数）；
+3. **切割**：`video_clipper` 用 FFmpeg（`-c copy` 无损快速切割）逐段切出片段；
+4. **上传与回传**：切片上传 MinIO（`clips/` 前缀），`clip_result_publisher` 发送 `video.clip.result.queue`，含每个切片的索引、起止秒、时长、文件大小等。
+
+---
+
+## 四、HTTP 接口
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/` | 服务信息与接口列表 |
+| `GET` | `/health` | 健康检查 |
+| `POST` | `/upload-video` | 上传视频并**同步**分析（含 RAG），返回 `events` 与 `unsafe_events`（含 `regulations`），供前端演示页使用 |
+| `POST` | `/detect-person-segments` | 检测视频中有人出现的时间段 |
+
+---
+
+## 五、目录结构
 
 ```
 cameraAi/
 ├── app/
-│   ├── __init__.py
-│   ├── main.py              # FastAPI 应用入口（含生命周期管理）
-│   ├── config.py            # 配置管理
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── routes.py        # HTTP API 路由
-│   ├── models/
-│   │   ├── __init__.py
-│   │   └── schemas.py       # 数据模型（含MQ消息模型）
+│   ├── main.py                      # FastAPI 入口，启动双 MQ 消费者 + YOLO 预热
+│   ├── config.py                    # 配置（pydantic-settings，自动读取项目根 .env）
+│   ├── api/routes.py                # HTTP 路由
+│   ├── models/schemas.py            # Pydantic 模型与 MQ 消息体（含 EventInfo.regulations）
 │   ├── services/
-│   │   ├── __init__.py
-│   │   ├── remote_uploader.py   # 远程上传服务
-│   │   ├── video_analyzer.py    # HTTP模式视频分析
-│   │   ├── stream_analyzer.py   # MQ模式流式分析
-│   │   └── mq_consumer.py       # RabbitMQ 消费者
-│   └── utils/
-│       ├── __init__.py
-│       └── json_extractor.py    # JSON 提取工具
-├── yolo/                    # YOLO 模型文件目录
-├── run.py                   # 启动脚本
+│   │   ├── stream_analyzer.py       # 核心分析器：视觉模型 + YOLO + RAG（唯一分析入口）
+│   │   ├── mq_consumer.py           # AI 检测任务消费者
+│   │   ├── clip_mq_consumer.py      # 切割任务消费者
+│   │   ├── person_segment_detector.py  # YOLO 人体片段检测
+│   │   ├── video_clipper.py         # FFmpeg 切割
+│   │   ├── result_publisher.py      # AI 结果回传
+│   │   ├── clip_result_publisher.py # 切割结果回传
+│   │   ├── remote_uploader.py       # 远程上传
+│   │   └── minio_client.py          # MinIO 客户端
+│   └── utils/json_extractor.py      # JSON 提取工具
+├── knowledge/                       # RAG 规章制度文档（.docx）
+├── yolo/                            # YOLO 模型权重（yolo11n.pt）
 ├── requirements.txt
-└── README.md
+└── .env                             # 敏感配置（embedding key 等，已 .gitignore）
 ```
 
-## 快速开始
+---
 
-### 1. 安装依赖
+## 六、依赖模型与外部服务
+
+| 角色 | 默认配置项 | 说明 |
+|------|-----------|------|
+| 视觉模型 | `vision_model_url` / `vision_model_name=hrylora` | 识别视频违规行为 |
+| 思考模型 | `thinking_model_url` / `thinking_model_name=Qwen3-1.7B-Thinking` | RAG 规章制度精炼 |
+| Embedding | `embedding_model_name=Qwen/Qwen3-Embedding-8B` @ ModelScope | 规章制度向量化 |
+| 对象存储 | `minio_*` | 视频、截图、切片存储 |
+| 消息队列 | `rabbitmq_*` | 与 Java 端一致 |
+| FFmpeg | `ffmpeg_binary` | 视频切割可执行文件路径 |
+
+> **敏感配置（如 `EMBEDDING_API_KEY`）放在项目根目录 `.env` 文件**，由 `app/config.py` 以绝对路径加载，不受启动工作目录影响；`.env` 已加入 `.gitignore`，禁止提交。
+
+---
+
+## 七、本地运行
 
 ```bash
+# 1. 创建并激活虚拟环境
+python -m venv .venv
+.\.venv\Scripts\activate        # Windows PowerShell
+
+# 2. 安装依赖
 pip install -r requirements.txt
+
+# 3. 准备 .env（在项目根目录）
+#    EMBEDDING_API_KEY=你的ModelScope密钥
+
+# 4. 启动服务（默认 8000 端口）
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+#    API 文档： http://localhost:8000/docs
 ```
 
-### 2. 配置
+> 运行前请确认：RabbitMQ、MinIO 已就绪且与 Java 端配置一致；视觉模型/思考模型服务可访问；`knowledge/` 下存在规章制度 docx；`yolo/` 下存在模型权重；FFmpeg 路径正确。
 
-可通过环境变量或 `.env` 文件配置：
+---
 
-```env
-# 远程服务器（HTTP上传模式）
-REMOTE_HOST=172.18.1.1
-REMOTE_PORT=22
-REMOTE_USER=user
-REMOTE_PASSWORD=your_password
+## 八、关键说明
 
-# AI 模型服务
-VISION_MODEL_URL=http://172.18.1.1:22002/v1
-VISION_MODEL_NAME=Qwen3-VL-4B-Instruct
-THINKING_MODEL_URL=http://172.18.1.1:22000/v1
-THINKING_MODEL_NAME=Qwen3-1.7B-Thinking
-
-# RabbitMQ（MQ异步模式）
-RABBITMQ_HOST=127.0.0.1
-RABBITMQ_PORT=5672
-RABBITMQ_USER=guest
-RABBITMQ_PASSWORD=guest
-MQ_EXCHANGE=video.upload.exchange
-MQ_QUEUE=video.upload.queue
-MQ_ROUTING_KEY=video.upload.#
-MQ_PREFETCH_COUNT=1
-```
-
-### 3. 启动服务
-
-```bash
-python run.py
-```
-
-服务启动后：
-- HTTP API: http://localhost:8000/docs
-- MQ消费者自动开始监听队列
-
-## 运行模式
-
-### 模式一：HTTP 同步模式
-
-前端直接上传视频，服务端处理后立即返回结果。
-
-```
-前端 -> POST /upload-video -> FastAPI -> AI分析 -> 返回结果
-```
-
-### 模式二：MQ 异步模式
-
-Java后端将任务发送到RabbitMQ，Python端消费处理。
-
-```
-Java后端 -> RabbitMQ(预签名URL) -> FastAPI消费者 -> 流式读取视频 -> AI分析
-```
-
-**关键特性：**
-- `prefetch_count=1`：同时只处理一个任务，防止GPU显存溢出
-- 流式读取：直接从预签名URL读取视频流，不下载到本地磁盘
-- 线程池执行：阻塞的AI推理在线程池中执行，不阻塞事件循环
-
-## MQ 消息格式
-
-Java端发送的消息格式：
-
-```json
-{
-  "taskId": "VID-123-1234567890",
-  "videoId": 123,
-  "presignedUrl": "http://minio:9000/bucket/video.mp4?X-Amz-...",
-  "bucketName": "zhifajiluyi",
-  "objectName": "2026/01/21/xxx.mp4",
-  "originalUrl": "http://minio:9000/bucket/video.mp4",
-  "createTime": "2026-01-21T10:00:00",
-  "metadata": {
-    "userName": "张三",
-    "fileName": "video.mp4"
-  }
-}
-```
-
-## API 接口
-
-### POST /upload-video
-
-上传视频并进行分析（同步模式）
-
-### GET /health
-
-健康检查接口
-
-## 依赖说明
-
-| 依赖 | 用途 |
-|------|------|
-| FastAPI | Web 框架 |
-| aio-pika | RabbitMQ 异步客户端 |
-| LangChain | AI 模型调用 |
-| OpenCV | 视频流处理 |
-| Ultralytics | YOLO 物体检测 |
+- **唯一分析入口**：所有分析统一走 `stream_analyzer.StreamVideoAnalyzer`，旧的 `video_analyzer.py` 已废弃删除。
+- **RAG 健壮性**：向量库初始化失败或思考模型不可用时自动降级，日志中以 `[RAG]` 前缀输出向量库初始化、命中规章长度等信息，便于排查。
+- **第三方 Embedding 端点**：`OpenAIEmbeddings` 已设置 `check_embedding_ctx_length=False`，发送原始文本而非 token 数组，适配 ModelScope 等第三方端点。
