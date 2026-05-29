@@ -28,48 +28,42 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────── Prompts ───────────────────────────
 
-# 整合自 video_analyzer.py：含 JSON 示例、start_second/end_second、明确禁止 markdown
 ANALYSIS_PROMPT = '''
 你是一位高度专业的铜矿生产视频行为分析专家，同时具备严谨的数据处理能力。
-    你的任务是检查视频中是否有违规行为，同时读取叠加在帧图像上的元数据（日期、时间、用户编号、单位编号、序列号），并在违规行为开始到结束期间记录这些元数据。
-    任务目标：
-    1.视频帧与元数据解析：
-        视频提取：处理每一帧视频图像，并同时读取叠加在图像上的文本信息。
-        元数据提取：精准提取以下五项元数据。
-            日期：视频拍摄的日期。
-            时间：视频拍摄的具体时间。
-            用户编号：视频中的用户编号。
-            单位编号：视频中的单位编号。
-            序列号：视频中的序列号。
-    2.事件记录与关联元数据：
-        对每个违规行为，记录事件的「开始时间」和「结束时间」,同时关联该行为中涉及的用户编号、单位编号、序列号以及日期。
-    3.输出要求：
-        将违规行为记录为可被机器直接解析的 JSON 数组，无需任何 Markdown 代码块标记。
-        若视频中未识别到任何事件，则每个字段都返回无。
-        每个 JSON 对象代表一个事件，必须包含以下字段：
-            event_description： 对违规行为的详细说明。
-            date： 事件发生日期（YYYY-MM-DD）。
-            start_time： 事件发生时间（HH:MM:SS）。
-            end_time： 事件结束时间（HH:MM:SS）。
-            user_number： 涉事用户的编号。
-            unit_number： 涉事单位的编号。
-            serial_number： 相关的设备或视频序列号。
-            start_second: 事件在视频第几秒开始。
-            end_second: 事件在视频第几秒结束。
-        JSON 对象结构示例如下：
-            [
-                {
-                "event_description": "",
-                "date": "",
-                "start_time": "",
-                "end_time": "",
-                "user_number": "",
-                "unit_number": "",
-                "serial_number": ""，
-                "start_second": "",
-                "end_second": ""
-                }
-            ]
+你的任务是检查视频中是否有违规行为，同时读取叠加在帧图像上的元数据（日期、时间、用户编号、单位编号、序列号），并在违规行为开始到结束期间记录这些元数据。
+
+任务目标：
+1. 视频帧与元数据解析：处理每一帧视频图像，精准提取以下五项元数据：
+   日期、时间、用户编号、单位编号、序列号。
+2. 事件记录与关联元数据：对每个违规行为，记录「开始时间」和「结束时间」，并关联元数据。
+3. 输出要求：
+   - 将所有违规行为记录为可被机器直接解析的 JSON 数组，无需任何 Markdown 代码块标记。
+   - 若未识别到任何违规事件，则输出空数组 []。
+   - 每个 JSON 对象必须包含以下字段：
+     event_description（对违规行为的详细说明）、date（YYYY-MM-DD）、
+     start_time（事件开始时间 HH:MM:SS，视频内相对时间）、
+     end_time（事件结束时间 HH:MM:SS，视频内相对时间）、
+     user_number、unit_number、serial_number、
+     start_second（事件在视频第几秒开始，数字）、
+     end_second（事件在视频第几秒结束，数字）。
+
+【重要】start_time/end_time/start_second/end_second 必须是从视频开始（00:00:00）算起的相对时间，
+禁止使用画面上的录制时钟时间（如 18:18:42），那会导致错误。date 字段可保留画面上的日期。
+
+JSON 输出示例：
+[
+    {
+        "event_description": "作业人员未佩戴安全帽进入作业区",
+        "date": "2025-12-09",
+        "start_time": "00:00:23",
+        "end_time": "00:00:45",
+        "user_number": "D14",
+        "unit_number": "tky25",
+        "serial_number": "Q461585",
+        "start_second": 23,
+        "end_second": 45
+    }
+]
 '''
 
 RAG_PROMPT = ChatPromptTemplate.from_template(
@@ -126,16 +120,31 @@ class StreamVideoAnalyzer:
                 base_url=self.settings.thinking_model_url,
                 api_key=self.settings.model_api_key,
                 timeout=self.settings.model_timeout,
+                # 思考模型会先输出 <think> 推理再给答案，需留足 token 否则答案被截断为空
+                max_tokens=2048,
             )
         return self._thinking_model
 
     def _strip_thinking_content(self, content: str) -> str:
-        """去掉模型思考内容，只保留思维链标记之后的输出结果"""
+        """
+        去掉模型思考内容，只保留思维链标记之后的输出结果。
+        若标记之后为空（思考占满输出/答案被截断），则退化为去掉 think 包裹后的全文，
+        避免返回空字符串导致 regulations 丢失。
+        """
+        if not content:
+            return ""
+        original = content
         for end_tag in ("</think>", "<|im_end|>"):
             if end_tag in content:
-                content = content.split(end_tag, 1)[1]
+                tail = content.split(end_tag, 1)[1].strip()
+                if tail:
+                    return tail
                 break
-        return content.strip()
+        # 闭合标签后为空 或 无闭合标签：移除 think 包裹后返回剩余内容
+        import re
+        cleaned = re.sub(r"<think>.*?</think>", "", original, flags=re.S)
+        cleaned = cleaned.replace("<think>", "").replace("</think>", "").replace("<|im_end|>", "")
+        return cleaned.strip()
 
     def _resolve_regulations_docx_path(self) -> str:
         """解析规章制度 docx 路径（支持相对项目根目录）"""
@@ -146,20 +155,30 @@ class StreamVideoAnalyzer:
         return os.path.join(project_root, docx_path)
 
     def _load_regulation_documents(self) -> List[Document]:
-        """从 docx 文件加载规章制度文本"""
+        """
+        从 docx 文件加载规章制度文本。
+        按「单条规章」拆分为多个 Document（每条违章一行），提升相似度检索粒度，
+        避免把整份清单塞进一个 Document 导致检索结果过于宽泛。
+        """
         docx_path = self._resolve_regulations_docx_path()
         if not os.path.exists(docx_path):
             raise FileNotFoundError(f"规章制度文件不存在: {docx_path}")
 
         docx = DocxDocument(docx_path)
-        paragraphs = [p.text.strip() for p in docx.paragraphs if p.text.strip()]
+        lines: List[str] = [p.text.strip() for p in docx.paragraphs if p.text.strip()]
         for table in docx.tables:
             for row in table.rows:
                 for cell in row.cells:
                     text = cell.text.strip()
                     if text:
-                        paragraphs.append(text)
-        return [Document(page_content="\n".join(paragraphs))]
+                        lines.append(text)
+
+        # 过滤掉过短的噪声行（如纯标题序号），每条规章单独成 Document
+        documents = [Document(page_content=line) for line in lines if len(line) > 4]
+        if not documents:
+            # 兜底：极端情况下仍合并为单文档，保证向量库非空
+            documents = [Document(page_content="\n".join(lines))]
+        return documents
 
     def _get_vector_store(self) -> Optional[InMemoryVectorStore]:
         """懒加载规章制度向量库"""
@@ -176,6 +195,11 @@ class StreamVideoAnalyzer:
                 model=self.settings.embedding_model_name,
                 base_url=self.settings.embedding_base_url,
                 api_key=self.settings.embedding_api_key or self.settings.model_api_key,
+                # ModelScope 等第三方端点只接受原始文本，必须关闭客户端 tiktoken 分词，
+                # 否则会发送 token 整数数组导致服务端返回空数据（No embedding data received）
+                check_embedding_ctx_length=False,
+                # 适配第三方端点的批量上限，避免一次请求过大被丢弃
+                chunk_size=10,
             )
             vector_store = InMemoryVectorStore(embeddings)
             vector_store.add_documents(texts)
@@ -368,20 +392,26 @@ class StreamVideoAnalyzer:
     def analyze_url(self, video_url: str) -> Dict[str, Any]:
         """
         HTTP 接口入口（替代已废弃的 VideoAnalyzer.analyze）。
-        直接调用视觉模型分析指定 URL 的视频，返回事件列表字典。
-        不包含 YOLO 检测和安全合规二次审查（HTTP 上传场景通常不需要）。
+        调用视觉模型分析指定 URL 的视频，并对识别出的违规事件执行 RAG 规章制度查询，
+        返回事件列表及带 regulations 字段的违规事件列表。
         """
         import time as _time
         logger.info(f"[analyze_url] 开始分析: {video_url[:80]}...")
         t0 = _time.time()
         content = self._call_vision_model(video_url)
         events_data = self._parse_events(content)
+        # RAG 规章制度查询（RAG 不可用时降级为直接使用 vision 事件）
+        unsafe_events = self._analyze_safety_sync(events_data, fallback_events=events_data)
         elapsed = _time.time() - t0
-        logger.info(f"[analyze_url] 分析完成，耗时={elapsed:.2f}s，事件数={len(events_data)}")
+        logger.info(
+            f"[analyze_url] 分析完成，耗时={elapsed:.2f}s，事件数={len(events_data)}，违规事件数={len(unsafe_events)}"
+        )
         return {
             "success": True,
             "events": events_data,
             "total_events": len(events_data),
+            "unsafe_events": unsafe_events,
+            "total_unsafe_events": len(unsafe_events),
         }
 
     def _parse_events(self, content: str) -> List[Dict]:
@@ -486,11 +516,24 @@ class StreamVideoAnalyzer:
                 retrieved_docs = vector_store.similarity_search(
                     question, k=self.settings.rag_top_k
                 )
-                docs_content = "\n\n".join(doc.page_content for doc in retrieved_docs)
-                answer = self.thinking_model.invoke(
-                    RAG_PROMPT.format(question=question, context=docs_content)
+                docs_content = "\n".join(doc.page_content for doc in retrieved_docs)
+
+                # 优先用思考模型基于检索结果精炼；失败或为空时直接回退到检索到的规章原文，
+                # 保证只要向量库可用，regulations 就不会为空。
+                regulations_text = ""
+                try:
+                    answer = self.thinking_model.invoke(
+                        RAG_PROMPT.format(question=question, context=docs_content)
+                    )
+                    regulations_text = self._strip_thinking_content(answer.content)
+                except Exception as model_err:
+                    logger.warning(f"[RAG] 思考模型精炼失败，改用检索原文: {model_err}")
+
+                if not regulations_text:
+                    regulations_text = docs_content
+                logger.info(
+                    f"[RAG] 命中规章长度={len(regulations_text)}, 检索条数={len(retrieved_docs)}"
                 )
-                regulations_text = self._strip_thinking_content(answer.content)
 
                 start_time_str = event.get('start_time', event.get('开始时间', ''))
                 end_time_str = event.get('end_time', event.get('结束时间', ''))

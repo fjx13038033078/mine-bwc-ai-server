@@ -2,6 +2,7 @@
 """
 应用配置
 """
+import os
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -33,7 +34,7 @@ class Settings(BaseSettings):
     regulations_docx_path: str = "knowledge/10号 关于印发《铜矿峪矿安全事故隐患排查治理制度》的通知.docx"
     embedding_model_name: str = "Qwen/Qwen3-Embedding-8B"
     embedding_base_url: str = "https://api-inference.modelscope.cn/v1"
-    embedding_api_key: str = "ms-6b054214-024b-482b-b467-58306f09193f"
+    embedding_api_key: str = ""   # 通过 .env 文件或环境变量 EMBEDDING_API_KEY 注入
     rag_top_k: int = 3
     
     # YOLO配置
@@ -90,7 +91,8 @@ class Settings(BaseSettings):
     clip_result_routing_key: str = "video.clip.result.finish"
     
     class Config:
-        env_file = ".env"
+        # 使用相对项目根目录的绝对路径，避免因启动工作目录不同导致 .env（含 embedding key）加载失败
+        env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
         env_file_encoding = "utf-8"
 
 
