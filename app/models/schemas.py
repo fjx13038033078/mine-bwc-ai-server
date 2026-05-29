@@ -18,6 +18,7 @@ class EventInfo(BaseModel):
     user_number: str = ""
     unit_number: str = ""
     serial_number: str = ""
+    regulations: str = ""
 
 
 class UploadInfo(BaseModel):

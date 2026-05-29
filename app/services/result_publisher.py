@@ -135,7 +135,9 @@ class ResultPublisher:
                 violation_start_second=violation_start_second,
                 violation_end_second=violation_end_second,
                 screenshot_url=screenshot_url,
-                events_json=self._events_to_json(task_result.events),
+                events_json=self._events_to_json(
+                    task_result.unsafe_events or task_result.events
+                ),
                 process_time=task_result.process_time,
                 error_message=task_result.error_message
             )
@@ -186,9 +188,16 @@ class ResultPublisher:
         elif "操作" in description:
             violation_type = "违规操作"
         
-        # 合并所有违规描述
-        all_descriptions = [e.event_description for e in unsafe_events if e.event_description]
-        ai_description = "\n".join(all_descriptions) if all_descriptions else description
+        # 合并所有违规描述及对应规章制度
+        parts = []
+        for e in unsafe_events:
+            if not e.event_description:
+                continue
+            part = e.event_description
+            if e.regulations:
+                part = f"{part}\n【相关规章制度】\n{e.regulations}"
+            parts.append(part)
+        ai_description = "\n\n".join(parts) if parts else description
         
         return violation_type, ai_description
     

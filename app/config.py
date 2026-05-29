@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     thinking_model_name: str = "Qwen3-1.7B-Thinking"
     model_api_key: str = "EMPTY"
     model_timeout: int = 60
+
+    # RAG 规章制度检索配置
+    regulations_docx_path: str = "knowledge/10号 关于印发《铜矿峪矿安全事故隐患排查治理制度》的通知.docx"
+    embedding_model_name: str = "Qwen/Qwen3-Embedding-8B"
+    embedding_base_url: str = "https://api-inference.modelscope.cn/v1"
+    embedding_api_key: str = "ms-6b054214-024b-482b-b467-58306f09193f"
+    rag_top_k: int = 3
     
     # YOLO配置
     yolo_model_path: str = "yolo/yolo11n.pt"

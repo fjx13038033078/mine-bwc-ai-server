@@ -6,7 +6,10 @@ pydantic-settings>=2.0.0
 
 # AI模型
 langchain>=0.1.0
+langchain-openai>=0.1.0
+langchain-text-splitters>=0.2.0
 openai>=1.0.0
+python-docx>=1.1.0
 
 # 文件传输
 paramiko>=3.0.0
