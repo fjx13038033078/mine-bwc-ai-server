@@ -117,11 +117,11 @@ def upload_screenshot(
             content_type="image/jpeg"
         )
         
-        # 生成预签名URL（24小时有效）
+        # 生成预签名URL（7天有效）
         url = client.presigned_get_object(
             bucket_name=settings.minio_bucket,
             object_name=filename,
-            expires=timedelta(hours=24)
+            expires=timedelta(days=7)
         )
         
         logger.info(f"截图上传成功: {filename}")
@@ -171,7 +171,7 @@ def upload_video_clip(
     url = client.presigned_get_object(
         bucket_name=bucket,
         object_name=object_name,
-        expires=timedelta(hours=24),
+        expires=timedelta(days=7),
     )
     logger.info(f"切片上传成功: {object_name} ({file_size / 1024 / 1024:.1f} MB)")
     return object_name, url, file_size
