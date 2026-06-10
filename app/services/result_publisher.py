@@ -128,6 +128,7 @@ class ResultPublisher:
             result_message = VideoAnalysisResultMessage(
                 task_id=task_result.task_id,
                 video_id=task_result.video_id,
+                clip_id=task_result.clip_id,
                 status="SUCCESS" if task_result.success else "FAILED",
                 has_violation=has_violation,
                 violation_type=violation_type,
@@ -159,8 +160,8 @@ class ResultPublisher:
             
             logger.info(
                 f"结果消息发送成功: taskId={task_result.task_id}, "
-                f"videoId={task_result.video_id}, status={result_message.status}, "
-                f"hasViolation={has_violation}"
+                f"videoId={task_result.video_id}, clipId={task_result.clip_id}, "
+                f"status={result_message.status}, hasViolation={has_violation}"
             )
             return True
             

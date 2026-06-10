@@ -72,7 +72,9 @@ class VideoTaskMessage(BaseModel):
     """
     task_id: str = Field(..., alias="taskId", description="任务ID（业务追踪ID）")
     video_id: int = Field(..., alias="videoId", description="视频ID（数据库主键）")
-    presigned_url: str = Field(..., alias="presignedUrl", description="预签名URL（核心字段，24小时有效）")
+    clip_id: Optional[int] = Field(None, alias="clipId", description="切片ID（切分预处理链路时非空）")
+    clip_start_second: Optional[float] = Field(None, alias="clipStartSecond", description="切片在原视频中的起始秒")
+    presigned_url: str = Field(..., alias="presignedUrl", description="预签名URL（核心字段，7天有效）")
     bucket_name: Optional[str] = Field(None, alias="bucketName", description="存储桶名称")
     object_name: Optional[str] = Field(None, alias="objectName", description="对象名称（MinIO中的文件路径）")
     original_url: Optional[str] = Field(None, alias="originalUrl", description="原始文件URL")
@@ -148,6 +150,7 @@ class VideoTaskResult(BaseModel):
     """视频任务处理结果（内部使用）"""
     task_id: str
     video_id: int
+    clip_id: Optional[int] = None  # 切片ID（切分预处理链路时非空）
     success: bool
     events: Optional[List[EventInfo]] = None
     unsafe_events: Optional[List[EventInfo]] = None
@@ -167,6 +170,7 @@ class VideoAnalysisResultMessage(BaseModel):
     """
     task_id: str = Field(..., alias="taskId", description="任务ID（与请求一致）")
     video_id: int = Field(..., alias="videoId", description="视频ID（数据库主键）")
+    clip_id: Optional[int] = Field(None, alias="clipId", description="切片ID（切分预处理链路时非空）")
     status: str = Field(..., description="状态: SUCCESS/FAILED")
     has_violation: bool = Field(False, alias="hasViolation", description="是否有违规")
     violation_type: Optional[str] = Field(None, alias="violationType", description="违规类型")
@@ -186,6 +190,7 @@ class VideoAnalysisResultMessage(BaseModel):
         return {
             "taskId": self.task_id,
             "videoId": self.video_id,
+            "clipId": self.clip_id,
             "status": self.status,
             "hasViolation": self.has_violation,
             "violationType": self.violation_type,

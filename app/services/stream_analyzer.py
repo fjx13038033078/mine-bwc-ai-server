@@ -305,7 +305,10 @@ class StreamVideoAnalyzer:
         import time
         start_time = time.time()
         
-        logger.info(f"[分析] 开始处理任务: taskId={task.task_id}, videoId={task.video_id}")
+        logger.info(
+            f"[分析] 开始处理任务: taskId={task.task_id}, videoId={task.video_id}, "
+            f"clipId={task.clip_id}, clipStartSecond={task.clip_start_second}"
+        )
         logger.info(f"[分析] 预签名URL: {task.presigned_url[:80]}...")
         
         try:
@@ -365,9 +368,20 @@ class StreamVideoAnalyzer:
                 except Exception as e:
                     logger.warning(f"捕获违规帧失败: {e}")
             
+            # 切分预处理链路：将事件时间偏移回原视频时间轴（须在违规帧捕获之后执行，
+            # 因为帧捕获使用的是切片内相对时间）
+            if task.clip_start_second:
+                self._apply_clip_offset(events_data, task.clip_start_second)
+                self._apply_clip_offset(unsafe_events, task.clip_start_second)
+                logger.info(
+                    f"[分析] 事件时间已偏移到原视频时间轴: clipId={task.clip_id}, "
+                    f"offset={task.clip_start_second}s"
+                )
+            
             return VideoTaskResult(
                 task_id=task.task_id,
                 video_id=task.video_id,
+                clip_id=task.clip_id,
                 success=True,
                 events=[EventInfo(**e) for e in events_data] if events_data else None,
                 unsafe_events=[EventInfo(**e) for e in unsafe_events] if unsafe_events else None,
@@ -384,6 +398,7 @@ class StreamVideoAnalyzer:
             return VideoTaskResult(
                 task_id=task.task_id,
                 video_id=task.video_id,
+                clip_id=task.clip_id,
                 success=False,
                 error_message=str(e),
                 process_time=process_time
@@ -580,6 +595,31 @@ class StreamVideoAnalyzer:
             })
         return unsafe_events
     
+    def _apply_clip_offset(self, events: List[Dict], offset: float) -> None:
+        """
+        切分预处理链路：将切片内相对时间偏移回原视频时间轴。
+        同步调整 start_second/end_second（数值）与 start_time/end_time（HH:MM:SS 字符串）。
+        """
+        if not events or not offset:
+            return
+        for ev in events:
+            for sec_key, time_key in (("start_second", "start_time"), ("end_second", "end_time")):
+                sec = ev.get(sec_key)
+                if sec is None:
+                    # 秒数缺失时尝试从时间字符串解析
+                    sec = self._parse_time_to_seconds(ev.get(time_key, ""))
+                if sec is None:
+                    continue
+                new_sec = sec + offset
+                ev[sec_key] = new_sec
+                ev[time_key] = self._seconds_to_time_str(new_sec)
+
+    @staticmethod
+    def _seconds_to_time_str(seconds: float) -> str:
+        """秒数转 HH:MM:SS 字符串"""
+        total = int(round(seconds))
+        return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
     def _sanitize_violation_times(self, unsafe_events: List[Dict], video_duration: float) -> None:
         """
         根据视频时长校验违规时间，超出范围则置为 None。
