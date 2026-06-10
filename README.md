@@ -2,8 +2,10 @@
 
 `cameraAi` 是执法记录仪智能分析系统的 **AI 推理服务**，基于 **FastAPI** 构建。它通过 **RabbitMQ** 与 Java 后端（`RuoYi-Cloud-Plus / ruoyi-camera`）解耦协作，承担两条核心业务链路的计算任务：
 
-- **AI 违规检测**：用视觉大模型识别执法视频中的安全违规行为，并通过 RAG 匹配对应的规章制度；
-- **视频人体切割**：用 YOLO 检测视频中有人出现的时段，再用 FFmpeg 切出有效片段。
+- **视频人体切割（AI 检测的预处理）**：用 YOLO 检测视频中有人出现的时段，再用 FFmpeg 切出有效片段；
+- **AI 违规检测**：对**切片**（或整段视频）用视觉大模型识别安全违规行为，并通过 RAG 匹配对应的规章制度。
+
+> 主链路为「先切分、后检测」：Java 端扫描入库后先发切割任务，切片落库后逐片下发 AI 检测任务（消息携带 `clipId` / `clipStartSecond`），本服务分析切片后将事件时间**偏移回原视频时间轴**再回传，由 Java 端聚合写回原视频记录。
 
 > 配套仓库：`RuoYi-Cloud-Plus / ruoyi-camera`（业务编排）、`plus-ui`（Vue3 前端）。
 
@@ -32,19 +34,24 @@ ruoyi-camera ───── video.upload.queue ─────►┐
 
 入口：`stream_analyzer.StreamVideoAnalyzer.analyze_from_stream`（MQ）/ `analyze_url`（HTTP）。
 
+任务消息（`VideoTaskMessage`）除预签名 URL 外，还可携带 `clipId`（切片 ID）与 `clipStartSecond`（切片在原视频中的起始秒）；`clipId` 非空即为**切片级检测**（主链路），为空则是整段视频直发（演示页等场景）。
+
 1. **YOLO 辅助检测**：本地流式跑 YOLO，逐秒输出辅助信息拼入提示词；
 2. **视觉模型识别**：调用视觉模型（`hrylora`）分析视频，输出违规事件 JSON（描述、起止时间、用户/单位/序列号等）；
 3. **RAG 规章制度匹配**：
    - 从 `knowledge/*.docx` 加载规章制度，**按单条规章拆分**后用 Embedding（`Qwen3-Embedding-8B` @ ModelScope）建向量库（`InMemoryVectorStore`，懒加载缓存）；
    - 对每条违规行为做相似度检索，再由思考模型（`Qwen3-1.7B-Thinking`）基于检索结果给出对应规章；思考模型不可用时**回退使用检索到的规章原文**，保证 `regulations` 不为空；
-4. **关键帧截图**：用 OpenCV 截取违规起始帧，上传 MinIO；
-5. **结果回传**：`result_publisher` 发送 `video.result.queue`，含 `aiDescription`、`eventsJson`（每条事件含 `regulations`）、`screenshotUrl` 等。
+4. **关键帧截图**：用 OpenCV 按**切片内相对时间**截取违规起始帧，上传 MinIO；
+5. **时间轴偏移**：切片级任务在抓帧后将所有事件的 `start/end_second` 与 `start/end_time` 加上 `clipStartSecond`，**统一换算到原视频时间轴**；
+6. **结果回传**：`result_publisher` 发送 `video.result.queue`，含 `clipId`、`aiDescription`、`eventsJson`（每条事件含 `regulations`）、`screenshotUrl` 等；Java 端按 `clipId` 落切片级结果，全部切片完成后聚合写回原视频记录。
 
 ---
 
 ## 三、视频人体切割链路
 
 入口：`clip_mq_consumer` 消费 `video.clip.queue`。
+
+切割任务来自两条 Java 链路：**AI 检测扫描**（`dataSource=scan`，切完后 Java 端自动逐片发 AI 检测任务）与**纯切割扫描**（`dataSource=clip`，切完即止）。本服务的切割处理逻辑对两者完全一致：
 
 1. **下载原视频**：通过预签名 URL 下载到临时文件；
 2. **人体片段检测**：`person_segment_detector` 用 YOLO 识别有人出现的时间段（支持最短片段时长、抽帧步长、置信度等参数）；
@@ -132,5 +139,6 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 ## 八、关键说明
 
 - **唯一分析入口**：所有分析统一走 `stream_analyzer.StreamVideoAnalyzer`，旧的 `video_analyzer.py` 已废弃删除。
+- **切片时间轴偏移**：`_apply_clip_offset` 在违规帧捕获之后执行（抓帧用切片内相对时间），将事件秒数与 `HH:MM:SS` 字符串统一偏移回原视频时间轴，保证 Java 端聚合后时间正确。
 - **RAG 健壮性**：向量库初始化失败或思考模型不可用时自动降级，日志中以 `[RAG]` 前缀输出向量库初始化、命中规章长度等信息，便于排查。
 - **第三方 Embedding 端点**：`OpenAIEmbeddings` 已设置 `check_embedding_ctx_length=False`，发送原始文本而非 token 数组，适配 ModelScope 等第三方端点。
