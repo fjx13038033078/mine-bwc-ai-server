@@ -28,3 +28,7 @@ minio>=7.1.0
 
 # 其他
 python-multipart>=0.0.6
+
+numpy~=2.4.1
+requests~=2.32.5
+torch~=2.9.1

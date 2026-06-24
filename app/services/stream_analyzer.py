@@ -185,7 +185,9 @@ class StreamVideoAnalyzer:
             # 因为帧捕获使用的是切片内相对时间）
             if task.clip_start_second:
                 self._apply_clip_offset(events_data, task.clip_start_second)
-                self._apply_clip_offset(unsafe_events, task.clip_start_second)
+                # unsafe_events 与 events_data 可能是同一列表对象，避免重复偏移
+                if unsafe_events is not events_data:
+                    self._apply_clip_offset(unsafe_events, task.clip_start_second)
                 logger.info(
                     f"[分析] 事件时间已偏移到原视频时间轴: clipId={task.clip_id}, "
                     f"offset={task.clip_start_second}s"
@@ -301,15 +303,37 @@ class StreamVideoAnalyzer:
         return []
 
     def _normalize_events(self, data) -> List[Dict]:
-        """将解析结果统一为列表格式"""
+        """将解析结果统一为列表格式，并归一化秒数字段类型"""
         if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        if isinstance(data, dict):
+            events = [item for item in data if isinstance(item, dict)]
+        elif isinstance(data, dict):
+            events = None
             for key in ("events", "结果", "事件列表", "event_list"):
                 if key in data and isinstance(data[key], list):
-                    return [item for item in data[key] if isinstance(item, dict)]
-            return [data]
-        return []
+                    events = [item for item in data[key] if isinstance(item, dict)]
+                    break
+            if events is None:
+                events = [data]
+        else:
+            return []
+        # 模型有时把 start_second/end_second 返回成字符串（如 "0"、"49"），统一转 float
+        for ev in events:
+            for sec_key in ("start_second", "end_second"):
+                if sec_key in ev:
+                    ev[sec_key] = self._to_float(ev.get(sec_key))
+        return events
+
+    @staticmethod
+    def _to_float(value) -> Optional[float]:
+        """安全地将任意值转为 float，无法转换时返回 None。"""
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        try:
+            return float(str(value).strip())
+        except (ValueError, TypeError):
+            return None
 
     def _apply_clip_offset(self, events: List[Dict], offset: float) -> None:
         """
@@ -320,7 +344,7 @@ class StreamVideoAnalyzer:
             return
         for ev in events:
             for sec_key, time_key in (("start_second", "start_time"), ("end_second", "end_time")):
-                sec = ev.get(sec_key)
+                sec = self._to_float(ev.get(sec_key))
                 if sec is None:
                     sec = self._parse_time_to_seconds(ev.get(time_key, ""))
                 if sec is None:
@@ -341,8 +365,11 @@ class StreamVideoAnalyzer:
         防止模型误用画面上的录制时钟时间（如 18:18:42）导致错误。
         """
         for ev in unsafe_events:
-            start_sec = ev.get('start_second')
-            end_sec = ev.get('end_second')
+            start_sec = self._to_float(ev.get('start_second'))
+            end_sec = self._to_float(ev.get('end_second'))
+            # 回写归一化后的数值，保证后续使用一致
+            ev['start_second'] = start_sec
+            ev['end_second'] = end_sec
             if start_sec is not None and start_sec > video_duration:
                 logger.warning(f"违规时间 start_second={start_sec}s 超出视频时长 {video_duration:.1f}s，已置空")
                 ev['start_second'] = None

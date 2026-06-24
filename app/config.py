@@ -3,6 +3,7 @@
 应用配置
 """
 import os
+import torch
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 
@@ -60,7 +61,7 @@ class Settings(BaseSettings):
     result_routing_key: str = "video.result.finish"
     
     # MinIO 配置（用于上传违规截图和视频切片）
-    minio_endpoint: str = "192.168.26.214:9000"
+    minio_endpoint: str = "192.168.26.62:9000"
     minio_access_key: str = "ruoyi"
     minio_secret_key: str = "ruoyi123"
     minio_bucket: str = "zhifajiluyi"
