@@ -24,25 +24,13 @@ class Settings(BaseSettings):
     
     # AI模型服务配置
     vision_model_url: str = "http://172.18.1.1:22001/v1"
-    vision_model_name: str = "hrylora"
-    thinking_model_url: str = "http://172.18.1.1:22000/v1"
-    thinking_model_name: str = "Qwen3-1.7B-Thinking"
+    vision_model_name: str = "zbylora"
     model_api_key: str = "EMPTY"
     model_timeout: int = 60
 
-    # RAG 规章制度检索配置
-    regulations_docx_path: str = "knowledge/10号 关于印发《铜矿峪矿安全事故隐患排查治理制度》的通知.docx"
-    embedding_model_name: str = "Qwen/Qwen3-Embedding-8B"
-    embedding_base_url: str = "https://api-inference.modelscope.cn/v1"
-    embedding_api_key: str = ""   # 通过 .env 文件或环境变量 EMBEDDING_API_KEY 注入
-    rag_top_k: int = 3
-    
-    # YOLO配置
-    yolo_model_path: str = "yolo/yolo11n.pt"
-
     # YOLO 人体片段检测配置
-    person_yolo_model_path: str = "yolo/yolo11n.pt"
-    yolo_device: str = "cpu"
+    person_yolo_model_path: str = "yolo/yolo26n.pt"
+    yolo_device: str = "cuda:0" if torch.cuda.is_available() else "cpu"
     yolo_vid_stride: int = 3
     yolo_imgsz: int = 640
     yolo_conf: float = 0.5
