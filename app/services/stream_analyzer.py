@@ -15,6 +15,7 @@ from openai import OpenAI
 
 from app.config import get_settings
 from app.models.schemas import VideoTaskMessage, VideoTaskResult, EventInfo
+from app.utils.violation_classifier import filter_violation_events
 
 logger = logging.getLogger(__name__)
 
@@ -149,10 +150,14 @@ class StreamVideoAnalyzer:
         try:
             content = self._call_vision_model(task.presigned_url)
             events_data = self._parse_events(content)
-            unsafe_events = events_data
+            # 仅将真实违规事件计入 unsafe_events；合规/「未发现违规」描述保留在 events 中供明细展示
+            unsafe_events = filter_violation_events(events_data)
 
             process_time = time.time() - start_time
-            logger.info(f"[分析] 任务完成: taskId={task.task_id}, 耗时={process_time:.2f}s, 事件数={len(events_data)}")
+            logger.info(
+                f"[分析] 任务完成: taskId={task.task_id}, 耗时={process_time:.2f}s, "
+                f"事件数={len(events_data)}, 违规事件数={len(unsafe_events)}"
+            )
 
             # 如果有违规事件，尝试捕获违规帧，并根据视频时长校验违规时间
             violation_frame = None
@@ -229,7 +234,7 @@ class StreamVideoAnalyzer:
         t0 = _time.time()
         content = self._call_vision_model(video_url)
         events_data = self._parse_events(content)
-        unsafe_events = events_data
+        unsafe_events = filter_violation_events(events_data)
         elapsed = _time.time() - t0
         logger.info(
             f"[analyze_url] 分析完成，耗时={elapsed:.2f}s，事件数={len(events_data)}，违规事件数={len(unsafe_events)}"

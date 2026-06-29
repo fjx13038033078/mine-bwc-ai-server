@@ -14,6 +14,7 @@ from aio_pika.abc import AbstractConnection, AbstractChannel, AbstractExchange
 from app.config import get_settings
 from app.models.schemas import VideoTaskResult, VideoAnalysisResultMessage, EventInfo
 from app.services.minio_client import upload_screenshot, capture_violation_frame
+from app.utils.violation_classifier import extract_violation_type, filter_violation_events, is_violation_event
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,12 @@ class ResultPublisher:
             
             # 处理截图上传
             screenshot_url = None
-            has_violation = bool(task_result.unsafe_events)
+            # 真实违规事件（过滤「未发现违规/合规」类描述）
+            violation_events = filter_violation_events(task_result.unsafe_events)
+            if not violation_events and task_result.events:
+                violation_events = filter_violation_events(task_result.events)
+
+            has_violation = bool(violation_events)
             violation_type = None
             ai_description = None
 
@@ -89,8 +95,8 @@ class ResultPublisher:
             violation_end_second = None
             if has_violation:
                 # 提取违规类型、描述及起止时间点
-                violation_type, ai_description = self._extract_violation_info(task_result.unsafe_events)
-                first_unsafe = task_result.unsafe_events[0]
+                violation_type, ai_description = self._extract_violation_info(violation_events)
+                first_unsafe = violation_events[0]
                 violation_start_second = getattr(first_unsafe, 'start_second', None)
                 violation_end_second = getattr(first_unsafe, 'end_second', None)
                 
@@ -136,9 +142,7 @@ class ResultPublisher:
                 violation_start_second=violation_start_second,
                 violation_end_second=violation_end_second,
                 screenshot_url=screenshot_url,
-                events_json=self._events_to_json(
-                    task_result.unsafe_events or task_result.events
-                ),
+                events_json=self._events_to_json(task_result.events or task_result.unsafe_events),
                 process_time=task_result.process_time,
                 error_message=task_result.error_message
             )
@@ -173,33 +177,23 @@ class ResultPublisher:
         """从违规事件中提取违规类型和描述"""
         if not unsafe_events:
             return None, None
-        
-        # 取第一个违规事件作为主要违规
+
+        # 取第一个真实违规事件作为主要违规
         first_event = unsafe_events[0]
-        description = first_event.event_description
-        
-        # 简单的违规类型提取（可根据实际需求优化）
-        violation_type = "安全违规"
-        if "安全帽" in description:
-            violation_type = "未佩戴安全帽"
-        elif "护目镜" in description:
-            violation_type = "未佩戴护目镜"
-        elif "反光衣" in description or "工作服" in description:
-            violation_type = "未穿戴防护服"
-        elif "操作" in description:
-            violation_type = "违规操作"
-        
+        description = first_event.event_description or ""
+        violation_type = extract_violation_type(description) or "安全违规"
+
         # 合并所有违规描述及对应规章制度
         parts = []
         for e in unsafe_events:
-            if not e.event_description:
+            if not e.event_description or not is_violation_event(e.event_description):
                 continue
             part = e.event_description
             if e.regulations:
                 part = f"{part}\n【相关规章制度】\n{e.regulations}"
             parts.append(part)
         ai_description = "\n\n".join(parts) if parts else description
-        
+
         return violation_type, ai_description
     
     def _events_to_json(self, events: Optional[List[EventInfo]]) -> Optional[str]:
