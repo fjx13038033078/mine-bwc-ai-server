@@ -56,8 +56,8 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(_warmup())
     
-    logger.info(f"HTTP服务: http://localhost:8000")
-    logger.info(f"API文档: http://localhost:8000/docs")
+    logger.info(f"HTTP服务: http://localhost:8100")
+    logger.info(f"API文档: http://localhost:8100/docs")
     logger.info("=" * 60)
     
     yield  # 应用运行中
